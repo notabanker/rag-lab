@@ -1,9 +1,9 @@
 import httpx
-from .config import DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL
+from .config import get_api_key, LLM_BASE_URL, LLM_MODEL
 from . import embedder, vector_store
 from .verifier import verify
 
-CHAT_URL = f"{DEEPSEEK_BASE_URL}/chat/completions"
+CHAT_URL = f"{LLM_BASE_URL}/chat/completions"
 
 GENERATOR_SYSTEM = """You answer questions using ONLY the provided CONTEXT chunks.
 
@@ -14,10 +14,12 @@ Rules:
 - Do not use outside knowledge."""
 
 def _generate(prompt: str, model: str = None, max_tokens: int = 600) -> str:
-    model = model or DEEPSEEK_MODEL
+    model = model or LLM_MODEL
     headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+        "Authorization": f"Bearer {get_api_key()}",
         "Content-Type": "application/json",
+        "HTTP-Referer": "https://github.com/notabanker/rag-lab",
+        "X-Title": "rag-lab",
     }
     payload = {
         "model": model,
@@ -33,7 +35,13 @@ def _generate(prompt: str, model: str = None, max_tokens: int = 600) -> str:
         with httpx.Client(timeout=180.0) as client:
             r = client.post(CHAT_URL, json=payload, headers=headers)
             r.raise_for_status()
-            return r.json()["choices"][0]["message"]["content"].strip()
+            body = r.json()
+            content = (body.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+            if not content:
+                raise RuntimeError(f"LLM returned empty response (model may be overloaded)")
+            return content
+    except RuntimeError:
+        raise
     except Exception as e:
         raise RuntimeError(f"LLM generation failed: {e}")
 
@@ -55,9 +63,11 @@ def retrieve(
     max_iters: int = 3,
     min_score: int = 8,
     model: str = None,
+    keyword: str = None,
+    max_tokens: int = 600,
 ) -> dict:
     """The /goal retrieval loop. Returns answer + full trace."""
-    model = model or DEEPSEEK_MODEL
+    model = model or LLM_MODEL
     trace = []
     current_q = question
     answer = ""
@@ -70,6 +80,22 @@ def retrieve(
             "chunks": [], "verifier": verdict,
             "iterations": 0, "trace": trace,
         }
+
+    if keyword:
+        chunks = vector_store.keyword_search(keyword, limit=rerank_top)
+        if not chunks:
+            return {
+                "answer": f"No chunks matched keyword pattern: {keyword}",
+                "chunks": [], "verifier": verdict,
+                "iterations": 0, "trace": trace,
+            }
+        context = _format_context(chunks)
+        try:
+            answer = _generate(f"CONTEXT:\n{context}\n\nQUESTION: {current_q}\n\nANSWER:", model=model, max_tokens=max_tokens)
+        except RuntimeError as e:
+            return {"answer": f"LLM error: {e}", "chunks": chunks, "verifier": verdict, "iterations": 1, "trace": trace}
+        verdict = verify(current_q, answer, chunks, model=model)
+        return {"answer": answer, "chunks": chunks, "verifier": verdict, "iterations": 1, "trace": trace}
 
     for i in range(max_iters):
         q_vec = embedder.embed([current_q])[0]

@@ -50,12 +50,15 @@ def ingest(
 def query(
     question: str = typer.Argument(...),
     top_k: int = typer.Option(20, "--top-k"),
+    rerank: int = typer.Option(5, "--rerank", help="Chunks passed to LLM"),
     min_score: int = typer.Option(8, "--min-score"),
+    keyword: str = typer.Option(None, "--keyword", help="Regex pattern for keyword retrieval (bypasses vector search)"),
+    max_tokens: int = typer.Option(600, "--max-tokens", help="Max output tokens"),
     show_trace: bool = typer.Option(False, "--trace"),
 ):
     """Run the /goal retrieval loop on a question."""
     console.print(f"[blue]Querying[/blue] '{question}' (min_score={min_score})...")
-    result = retrieve(question, top_k=top_k, min_score=min_score)
+    result = retrieve(question, top_k=top_k, rerank_top=rerank, min_score=min_score, keyword=keyword, max_tokens=max_tokens)
     console.print(f"\n[bold green]Answer[/bold green] (after {result['iterations']} iteration(s)):")
     console.print(result["answer"])
     v = result["verifier"]
