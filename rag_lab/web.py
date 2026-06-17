@@ -5,12 +5,20 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 from .parsers import pick_parser
 from . import chunker, embedder, vector_store
 from .retriever import retrieve
 
 app = FastAPI(title="rag-lab test console")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 PAGE = """<!DOCTYPE html>
 <html lang="en">
