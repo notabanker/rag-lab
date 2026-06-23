@@ -1,14 +1,14 @@
 import hashlib
-import json
 import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, File, UploadFile, Form
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from .parsers import pick_parser
 from . import chunker, embedder, vector_store
+from .config import DEFAULT_EMBED_MODEL, get_provider
+from .parsers import pick_parser
 from .retriever import retrieve
 
 app = FastAPI(title="rag-lab test console")
@@ -80,6 +80,11 @@ button:disabled{opacity:0.4;cursor:not-allowed}
 <div class="panel">
   <h2>Query</h2>
   <div class="row">
+    <div class="col"><label>Provider</label><select id="provider"><option value="deepseek">DeepSeek</option><option value="openrouter">OpenRouter</option><option value="tokenrouter">TokenRouter</option><option value="ollama">Ollama</option></select></div>
+    <div class="col"><label>Model (optional)</label><input id="model" placeholder="Override default model"></div>
+    <div class="col"><label>Embed Model (optional)</label><input id="embedmodel" placeholder="all-MiniLM-L6-v2"></div>
+  </div>
+  <div class="row">
     <div class="col" style="flex:2"><label>Question</label><textarea id="question" placeholder="Ask something about the ingested documents..."></textarea></div>
     <div class="col"><label>Top-K</label><input id="topk" type="number" value="20" min="1" max="100"></div>
     <div class="col"><label>Min Score</label><input id="minscore" type="number" value="8" min="1" max="10"></div>
@@ -129,11 +134,12 @@ $('ingestbtn').onclick=async()=>{
   fd.append('strategy',$('strategy').value);
   fd.append('chunk_size',$('chunksize').value);
   fd.append('overlap',$('overlap').value);
+  fd.append('embed_model',$('embedmodel').value.trim()||'');
   try{
     const r=await fetch('/api/ingest',{method:'POST',body:fd});
     const j=await r.json();
     if(r.ok)status($('ingeststatus'),'ok','Ingested '+j.chunks+' chunks from '+f.name);
-    else status($('ingeststatus'),'err',j.error||'Ingest failed');
+    else status($('ingeststatus'),'err',j.detail||j.error||'Ingest failed');
   }catch(e){status($('ingeststatus'),'err','Error: '+e.message)}
   spin($('ingestbtn'),false);
   loadStats();
@@ -149,10 +155,10 @@ $('querybtn').onclick=async()=>{
     const r=await fetch('/api/query',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({question:q,top_k:+$('topk').value,min_score:+$('minscore').value})
+      body:JSON.stringify({question:q,top_k:+$('topk').value,min_score:+$('minscore').value,provider:$('provider').value,model:$('model').value.trim()||undefined,embed_model:$('embedmodel').value.trim()||undefined})
     });
     const j=await r.json();
-    if(!r.ok){status($('querystatus'),'err',j.error||'Query failed');spin($('querybtn'),false);return}
+    if(!r.ok){status($('querystatus'),'err',j.detail||j.error||'Query failed');spin($('querybtn'),false);return}
     status($('querystatus'),'ok','Done in '+j.iterations+' iteration(s)');
     $('answertext').textContent=j.answer;
     const v=j.verifier||{};
@@ -173,7 +179,7 @@ async function loadStats(){
   try{
     const r=await fetch('/api/stats');
     const j=await r.json();
-    $('statsbox').innerHTML='Chunks: <b>'+j.chunk_count+'</b> &nbsp;|&nbsp; DB: <b>'+j.db_path+'</b> &nbsp;|&nbsp; Embedder: all-MiniLM-L6-v2 (CPU) &nbsp;|&nbsp; LLM: DeepSeek deepseek-chat';
+    $('statsbox').innerHTML='Chunks: <b>'+j.chunk_count+'</b> &nbsp;|&nbsp; DB: <b>'+j.db_path+'</b> &nbsp;|&nbsp; Embedder: '+j.embedder+' &nbsp;|&nbsp; LLM: '+j.provider+' '+j.model;
   }catch(e){$('statsbox').textContent='Stats unavailable'}
 }
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
@@ -192,49 +198,74 @@ async def api_ingest(
     strategy: str = Form("sentence"),
     chunk_size: int = Form(512),
     overlap: int = Form(64),
+    embed_model: str = Form(None),
 ):
     try:
         suffix = Path(file.filename).suffix
         if suffix.lower() not in {".pdf", ".epub", ".md", ".markdown"}:
-            return {"error": f"Unsupported file type: {suffix}"}
+            raise HTTPException(status_code=415, detail=f"Unsupported file type: {suffix}")
 
         content = await file.read()
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(content)
-            tmp_path = tmp.name
+        if len(content) > 50 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="File too large (max 50MB)")
 
-        parser = pick_parser(tmp_path)
-        text = parser(tmp_path)
-        Path(tmp_path).unlink()
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(content)
+                tmp.flush()
+                tmp_path = tmp.name
 
+            parser = pick_parser(tmp_path)
+            text = parser(tmp_path)
+        finally:
+            if tmp_path:
+                Path(tmp_path).unlink(missing_ok=True)
+
+        kwargs = {"text": text}
         if strategy == "fixed":
-            chunks = chunker.chunk_fixed(text, size=chunk_size, overlap=overlap)
+            kwargs["size"] = chunk_size
+            kwargs["overlap"] = overlap
         else:
-            chunks = chunker.chunk_sentence(text, target_size=chunk_size, overlap=max(1, overlap // 64))
+            kwargs["target_size"] = chunk_size
+            kwargs["overlap"] = overlap
+        chunks = chunker.chunk(**kwargs, strategy=strategy)
 
         if not chunks:
-            return {"error": "No text extracted from file"}
+            raise HTTPException(status_code=400, detail="No text extracted from file")
 
-        vecs = embedder.embed([c.text for c in chunks])
+        vecs = embedder.embed([c.text for c in chunks], model_name=embed_model if embed_model else None)
         sha = hashlib.sha256(content).hexdigest()[:10]
-        metadatas = [{"source": file.filename, "chunk_idx": i, "strategy": strategy, "file_sha": sha} for i in range(len(chunks))]
+        vector_store.delete_by_source(sha)
+        metadatas = [
+            {"source": file.filename, "chunk_idx": i, "strategy": strategy, "file_sha": sha}
+            for i in range(len(chunks))
+        ]
         ids = [f"{sha}-{i}" for i in range(len(chunks))]
         vector_store.upsert(chunks, vecs, metadatas, ids)
         return {"status": "ok", "chunks": len(chunks), "filename": file.filename}
+    except HTTPException:
+        raise
     except ValueError as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        return {"error": f"Ingest failed: {e}"}
+        raise HTTPException(status_code=500, detail=f"Ingest failed: {e}")
 
 @app.post("/api/query")
 async def api_query(data: dict):
     question = data.get("question", "")
     top_k = data.get("top_k", 20)
     min_score = data.get("min_score", 8)
+    provider = data.get("provider")
+    model = data.get("model")
+    embed_model = data.get("embed_model")
     if not question.strip():
-        return {"error": "Question is required"}
+        raise HTTPException(status_code=400, detail="Question is required")
     try:
-        result = retrieve(question, top_k=top_k, min_score=min_score)
+        result = retrieve(
+            question, top_k=top_k, min_score=min_score,
+            provider=provider, model=model, embed_model=embed_model,
+        )
         return {
             "answer": result["answer"],
             "verifier": result["verifier"],
@@ -242,12 +273,24 @@ async def api_query(data: dict):
             "trace": result.get("trace", []),
             "partial": result.get("partial", False),
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        return {"error": f"Query failed: {e}"}
+        raise HTTPException(status_code=500, detail=f"Query failed: {e}")
 
 @app.get("/api/stats")
 async def api_stats():
+    prov_cfg = get_provider()
     return {
         "chunk_count": vector_store.count(),
         "db_path": vector_store._PERSIST_DIR,
+        "embedder": DEFAULT_EMBED_MODEL,
+        "provider": prov_cfg.name,
+        "model": prov_cfg.model,
     }
+
+
+@app.delete("/api/chunks/{file_sha}")
+async def api_delete_chunks(file_sha: str):
+    n = vector_store.delete_by_source(file_sha)
+    return {"deleted": n}
