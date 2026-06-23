@@ -4,7 +4,6 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
-from fastapi.middleware.cors import CORSMiddleware
 
 from . import chunker, embedder, vector_store
 from .config import DEFAULT_EMBED_MODEL, get_provider
@@ -12,13 +11,6 @@ from .parsers import pick_parser
 from .retriever import retrieve
 
 app = FastAPI(title="rag-lab test console")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 PAGE = """<!DOCTYPE html>
 <html lang="en">
@@ -188,9 +180,11 @@ loadStats();
 </body>
 </html>"""
 
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return PAGE
+
 
 @app.post("/api/ingest")
 async def api_ingest(
@@ -251,6 +245,7 @@ async def api_ingest(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingest failed: {e}")
 
+
 @app.post("/api/query")
 async def api_query(data: dict):
     question = data.get("question", "")
@@ -277,6 +272,7 @@ async def api_query(data: dict):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Query failed: {e}")
+
 
 @app.get("/api/stats")
 async def api_stats():
