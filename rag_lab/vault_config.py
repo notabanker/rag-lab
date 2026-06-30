@@ -29,6 +29,8 @@ DEFAULT_EXCLUDE_PATTERNS = [
     "50_Research/",
     "60_Sessions/",
     "L2-episodic/drafts/",
+    "L2-episodic/scribe/",
+    "L2-episodic/fad-debates/",
 ]
 
 
