@@ -95,6 +95,37 @@ def query(
 
 
 @app.command()
+def index(
+    vault_path: str = typer.Option(None, "--vault", help="Path to Obsidian vault root"),
+    embed_model: str = typer.Option(None, "--embed-model", help="SentenceTransformer model for embeddings"),
+):
+    """Batch-index all markdown files from a vault directory."""
+    from .indexer import index_vault
+    vault_root = vault_path or vector_store._PERSIST_DIR
+    try:
+        result = index_vault(vault_root, embed_model=embed_model)
+    except FileNotFoundError as e:
+        typer.echo(f"❌ {e}")
+        raise typer.Exit(1)
+    console.print(f"[green]Indexed {result['files_indexed']} files, {result['chunks_total']} chunks[/green]")
+    if result["by_collection"]:
+        for coll, n in sorted(result["by_collection"].items()):
+            console.print(f"  {coll}: {n} chunks")
+
+
+@app.command()
+def watch_cmd(
+    vault_path: str = typer.Option(..., "--vault", help="Path to Obsidian vault root"),
+    debounce: float = typer.Option(2.0, "--debounce", help="Seconds to wait before indexing changed file"),
+    embed_model: str = typer.Option(None, "--embed-model", help="SentenceTransformer model for embeddings"),
+):
+    """Watch vault for changes and auto-index markdown files."""
+    from .watcher import watch
+    console.print(f"[green]Watching {vault_path} for changes... (Ctrl+C to stop)[/green]")
+    watch(vault_path, embed_model=embed_model, debounce=debounce)
+
+
+@app.command()
 def delete(
     file_sha: str = typer.Argument(..., help="File SHA prefix to delete chunks for"),
 ):

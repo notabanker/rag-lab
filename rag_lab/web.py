@@ -286,6 +286,47 @@ async def api_stats():
     }
 
 
+@app.post("/api/search")
+async def api_search(data: dict):
+    """
+    Lightweight semantic search — no verifier loop. For agent-to-agent queries.
+
+    Request: {"query": "...", "layers": ["l3_semantic"], "top_k": 5}
+    Response: {"results": [...], "query": "...", "total_chunks_searched": N}
+    """
+    query_text = data.get("query", "")
+    if not query_text.strip():
+        raise HTTPException(status_code=400, detail="Query is required")
+
+    layers = data.get("layers")
+    top_k = data.get("top_k", 20)
+    embed_model = data.get("embed_model")
+
+    if layers:
+        collections = layers
+    else:
+        from .vault_config import DEFAULT_LAYERS
+        collections = [lc.collection for lc in DEFAULT_LAYERS]
+
+    import logging
+    logger = logging.getLogger("rag_lab.web")
+
+    try:
+        q_vec = embedder.embed([query_text], model_name=embed_model)[0]
+    except Exception as e:
+        logger.error(f"Embedding failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Embedding failed: {e}")
+
+    results = vector_store.query_multi(q_vec, collections=collections, top_k=top_k)
+    total = sum(vector_store.count(c) for c in collections)
+
+    return {
+        "results": results,
+        "query": query_text,
+        "total_chunks_searched": total,
+    }
+
+
 @app.delete("/api/chunks/{file_sha}")
 async def api_delete_chunks(file_sha: str):
     n = vector_store.delete_by_source(file_sha)

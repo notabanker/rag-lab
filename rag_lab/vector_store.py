@@ -6,12 +6,12 @@ from .chunker import Chunk
 
 _PERSIST_DIR = "./chroma_db"
 _CLIENT = None
-_COLLECTION = None
+_COLLECTIONS: dict[str, object] = {}
 _lock = threading.Lock()
 
 
 def init_store(persist_dir: str):
-    global _PERSIST_DIR, _CLIENT, _COLLECTION
+    global _PERSIST_DIR, _CLIENT, _COLLECTIONS
     with _lock:
         if _CLIENT is not None:
             try:
@@ -20,24 +20,30 @@ def init_store(persist_dir: str):
                 pass
         _PERSIST_DIR = persist_dir
         _CLIENT = None
-        _COLLECTION = None
+        _COLLECTIONS = {}
+
+
+def _init_client():
+    global _CLIENT
+    if _CLIENT is None:
+        _CLIENT = chromadb.PersistentClient(path=_PERSIST_DIR, settings=Settings(anonymized_telemetry=False))
 
 
 def get_collection(name: str = "rag_lab"):
-    global _CLIENT, _COLLECTION
-    if _COLLECTION is None:
+    global _COLLECTIONS
+    if name not in _COLLECTIONS:
         with _lock:
-            if _COLLECTION is None:
-                _CLIENT = chromadb.PersistentClient(path=_PERSIST_DIR, settings=Settings(anonymized_telemetry=False))
-                _COLLECTION = _CLIENT.get_or_create_collection(
+            if name not in _COLLECTIONS:
+                _init_client()
+                _COLLECTIONS[name] = _CLIENT.get_or_create_collection(
                     name=name,
                     metadata={"hnsw:space": "cosine"}
                 )
-    return _COLLECTION
+    return _COLLECTIONS[name]
 
 
-def upsert(chunks: list[Chunk], embeddings: list, metadatas: list, ids: list):
-    coll = get_collection()
+def upsert(chunks: list[Chunk], embeddings: list, metadatas: list, ids: list, collection: str = "rag_lab"):
+    coll = get_collection(collection)
     coll.upsert(
         embeddings=embeddings,
         documents=[c.text for c in chunks],
@@ -46,8 +52,8 @@ def upsert(chunks: list[Chunk], embeddings: list, metadatas: list, ids: list):
     )
 
 
-def query(query_embedding: list[float], top_k: int = 20) -> list[dict]:
-    coll = get_collection()
+def query(query_embedding: list[float], top_k: int = 20, collection: str = "rag_lab") -> list[dict]:
+    coll = get_collection(collection)
     try:
         results = coll.query(
             query_embeddings=[query_embedding],
@@ -66,12 +72,23 @@ def query(query_embedding: list[float], top_k: int = 20) -> list[dict]:
         raise RuntimeError(f"ChromaDB query returned unexpected shape: missing key {e}")
 
 
-def count() -> int:
-    return get_collection().count()
+def query_multi(query_embedding: list[float], collections: list[str], top_k: int = 20) -> list[dict]:
+    all_hits = []
+    for coll_name in collections:
+        hits = query(query_embedding, top_k=top_k, collection=coll_name)
+        for h in hits:
+            h["collection"] = coll_name
+        all_hits.extend(hits)
+    all_hits.sort(key=lambda h: h.get("distance", float("inf")))
+    return all_hits[:top_k]
 
 
-def delete_by_source(file_sha: str) -> int:
-    coll = get_collection()
+def count(collection: str = "rag_lab") -> int:
+    return get_collection(collection).count()
+
+
+def delete_by_source(file_sha: str, collection: str = "rag_lab") -> int:
+    coll = get_collection(collection)
     try:
         results = coll.get(where={"file_sha": file_sha})
     except Exception:
@@ -83,7 +100,7 @@ def delete_by_source(file_sha: str) -> int:
 
 
 def shutdown():
-    global _CLIENT, _COLLECTION
+    global _CLIENT, _COLLECTIONS
     with _lock:
         if _CLIENT is not None:
             try:
@@ -91,4 +108,4 @@ def shutdown():
             except Exception:
                 pass
         _CLIENT = None
-        _COLLECTION = None
+        _COLLECTIONS = {}

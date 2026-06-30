@@ -48,7 +48,54 @@ def chunk_sentence(text: str, target_size: int = 512, overlap: int = 1) -> list[
     return chunks
 
 
-STRATEGIES = {"fixed": chunk_fixed, "sentence": chunk_sentence}
+def chunk_document(text: str) -> list[Chunk]:
+    if not text.strip():
+        return []
+    stripped = text.strip()
+    return [Chunk(text=stripped, start=text.index(stripped), end=text.index(stripped) + len(stripped))]
+
+
+def chunk_paragraph(text: str, max_chars: int = 1000, overlap_paragraphs: int = 1) -> list[Chunk]:
+    if not text.strip():
+        return []
+    chunks: list[Chunk] = []
+    buffer: list[tuple[str, int]] = []
+    buffer_chars = 0
+    chunk_start = 0
+    cursor = 0
+
+    for m in re.finditer(r'[^\n]+(?:\n[^\n]+)*', text):
+        para_text = m.group()
+        para_start = m.start()
+        para_len = len(para_text)
+        cursor = para_start + para_len
+
+        sep = 2 if buffer else 0
+        if buffer and buffer_chars + len(para_text) + sep > max_chars:
+            chunk_text = "\n\n".join(p[0] for p in buffer)
+            chunks.append(Chunk(text=chunk_text, start=chunk_start, end=chunk_start + len(chunk_text)))
+            if overlap_paragraphs > 0:
+                buffer = buffer[-overlap_paragraphs:]
+            else:
+                buffer = []
+            buffer_chars = sum(len(p[0]) + 2 for p in buffer) - 2 if buffer else 0
+            chunk_start = buffer[0][1] if buffer else cursor
+
+        buffer.append((para_text, para_start))
+        buffer_chars += len(para_text) + sep
+
+    if buffer:
+        chunk_text = "\n\n".join(p[0] for p in buffer)
+        chunks.append(Chunk(text=chunk_text, start=chunk_start, end=chunk_start + len(chunk_text)))
+    return chunks
+
+
+STRATEGIES = {
+    "fixed": chunk_fixed,
+    "sentence": chunk_sentence,
+    "document": chunk_document,
+    "paragraph": chunk_paragraph,
+}
 
 
 def chunk(text: str, strategy: str = "sentence", **kwargs) -> list[Chunk]:

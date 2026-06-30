@@ -1,7 +1,8 @@
+*.egg-info/
+*.pyc
+.DS_Store
 .venv/
 __pycache__/
-*.pyc
 chroma_db/
-uv.lock
-*.egg-info/
 dist/
+uv.lock
