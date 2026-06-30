@@ -54,7 +54,7 @@ def _index_single_file(file_path: str, vault_root: str, embed_model: str = None)
         metadatas.append(m)
         ids.append(f"{file_sha}-{i}")
 
-    vector_store.delete_by_source(file_sha, collection=collection)
+    vector_store.delete_chunks_for_file(file_path, vault_root, collection=collection)
     vecs = embedder.embed([c.text for c in chunks], model_name=embed_model)
     vector_store.upsert(chunks, vecs, metadatas, ids, collection=collection)
 

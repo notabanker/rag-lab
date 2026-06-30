@@ -70,6 +70,12 @@ def _refine_query(question: str, issues: list[str]) -> str:
     return combined
 
 
+def _resolve_collections() -> list[str]:
+    if vector_store.count("l2_episodic") > 0 or vector_store.count("l3_semantic") > 0:
+        return ["l2_episodic", "l3_semantic"]
+    return ["rag_lab"]
+
+
 def retrieve(
     question: str,
     top_k: int = 20,
@@ -79,6 +85,7 @@ def retrieve(
     provider: str = None,
     model: str = None,
     embed_model: str = None,
+    collections: list[str] | None = None,
 ) -> dict:
     """The /goal retrieval loop. Returns answer + full trace."""
     trace = []
@@ -86,6 +93,7 @@ def retrieve(
     answer = ""
     verdict = {"score": 0, "grounded": False, "issues": [], "verdict": "UNGROUNDED"}
     chunks = []
+    search_collections = collections or _resolve_collections()
 
     if max_iters < 1:
         return {
@@ -97,7 +105,7 @@ def retrieve(
     for i in range(max_iters):
         logger.debug(f"Iter {i+1}/{max_iters}: embedding query...")
         q_vec = embedder.embed([current_q], model_name=embed_model)[0]
-        chunks = vector_store.query(q_vec, top_k=top_k)[:rerank_top]
+        chunks = vector_store.query_multi(q_vec, collections=search_collections, top_k=top_k)[:rerank_top]
         logger.debug(f"Iter {i+1}: retrieved {len(chunks)} chunks")
         if not chunks:
             return {

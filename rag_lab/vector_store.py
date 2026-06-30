@@ -90,13 +90,25 @@ def count(collection: str = "rag_lab") -> int:
 def delete_by_source(file_sha: str, collection: str = "rag_lab") -> int:
     coll = get_collection(collection)
     try:
-        results = coll.get(where={"file_sha": file_sha})
+        results = coll.get()
+        matching = [mid for mid in results["ids"] if mid.startswith(file_sha + "-")]
+        if matching:
+            coll.delete(ids=matching)
+        return len(matching)
     except Exception:
         return 0
-    ids = results.get("ids", [])
-    if ids:
-        coll.delete(ids=ids)
-    return len(ids)
+
+
+def delete_chunks_for_file(file_path: str, vault_root: str, collection: str) -> int:
+    import hashlib
+    from pathlib import Path
+
+    try:
+        rel = str(Path(file_path).relative_to(vault_root))
+    except ValueError:
+        return 0
+    file_sha = hashlib.sha256(rel.encode()).hexdigest()[:12]
+    return delete_by_source(file_sha, collection=collection)
 
 
 def shutdown():
