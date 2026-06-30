@@ -34,6 +34,10 @@ def _index_single_file(file_path: str, vault_root: str, embed_model: str = None)
 
     fm, body = extract_frontmatter(raw)
 
+    if fm.get("importance") == "low":
+        logger.debug(f"Skipping low-importance file: {rel}")
+        return
+
     if len(body) <= 1000:
         chunks = chunker.chunk(body, strategy="document")
     else:

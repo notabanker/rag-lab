@@ -69,6 +69,13 @@ class TestIndexSingleFile:
         result = _index_single_file(str(feat), str(vault))
         assert result is None
 
+    def test_low_importance_skipped(self, tmp_path):
+        vault = _make_vault(tmp_path)
+        feat = vault / "L3-semantic" / "entities" / "low.md"
+        feat.write_text("---\nimportance: low\n---\n\n# Low prio\nShould be skipped.")
+        result = _index_single_file(str(feat), str(vault))
+        assert result is None
+
     def test_idempotent_reindex(self, tmp_path):
         vault = _make_vault(tmp_path)
         feat = vault / "L3-semantic" / "entities" / "concept.md"
@@ -87,9 +94,8 @@ class TestIndexVault:
         (vault / "L2-episodic" / "agent-logs" / "session.md").write_text("Session log.")
         (vault / "L3-semantic" / "entities" / "concept.md").write_text("Concept body.")
         result = index_vault(str(vault))
-        assert result["files_indexed"] == 3
-        assert result["chunks_total"] >= 3
-        assert "l1_working" in result["by_collection"]
+        assert result["files_indexed"] == 2
+        assert result["chunks_total"] >= 2
         assert "l2_episodic" in result["by_collection"]
         assert "l3_semantic" in result["by_collection"]
 

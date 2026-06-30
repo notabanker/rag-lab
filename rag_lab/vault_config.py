@@ -12,7 +12,6 @@ class LayerConfig:
 
 
 DEFAULT_LAYERS = [
-    LayerConfig("l1", "l1_working", "L1-working", "Working memory"),
     LayerConfig("l2", "l2_episodic", "L2-episodic", "Episodic memory"),
     LayerConfig("l3", "l3_semantic", "L3-semantic", "Semantic memory"),
 ]
@@ -29,6 +28,7 @@ DEFAULT_EXCLUDE_PATTERNS = [
     "personal/",
     "50_Research/",
     "60_Sessions/",
+    "L2-episodic/drafts/",
 ]
 
 

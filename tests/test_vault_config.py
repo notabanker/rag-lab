@@ -9,8 +9,8 @@ from rag_lab.vault_config import (
 
 
 class TestResolveLayer:
-    def test_l1(self):
-        assert resolve_layer("vault/L1-working/today.md", "vault") == "l1_working"
+    def test_l1_excluded(self):
+        assert resolve_layer("vault/L1-working/today.md", "vault") is None
 
     def test_l2(self):
         assert resolve_layer("vault/L2-episodic/agent-logs/session.md", "vault") == "l2_episodic"
@@ -82,6 +82,9 @@ class TestShouldIndex:
 
     def test_git_excluded(self, vault):
         assert not should_index(f"{vault}/.git/config", vault, DEFAULT_EXCLUDE_PATTERNS)
+
+    def test_drafts_excluded(self, vault):
+        assert not should_index(f"{vault}/L2-episodic/drafts/session.md", vault, DEFAULT_EXCLUDE_PATTERNS)
 
     def test_ds_store_excluded(self, vault):
         assert not should_index(f"{vault}/.DS_Store", vault, DEFAULT_EXCLUDE_PATTERNS)
