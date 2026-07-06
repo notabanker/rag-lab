@@ -1,34 +1,110 @@
 # rag-lab
-Standalone RAG learning project. PDF + EPUB + Markdown → Chroma → /goal retrieval loop with verifier.
+
+Personal RAG lab for local corpora: PDF + EPUB + Markdown -> versioned Chroma collections -> multilingual hybrid retrieval (E5 vectors + BM25 + cross-encoder rerank + small-to-big context) -> cited answers with verifier and eval gates.
 
 ## Setup
+
 ```bash
-cd ~/code/rag-lab
+cd ~/rag-lab
 uv sync
 ```
-In another terminal:
+
+LLM calls use an OpenAI-compatible endpoint. Defaults are OpenRouter + Qwen:
+
 ```bash
-ollama serve   # if not already running
-ollama pull qwen2.5:1.5b
+export OPENROUTER_API_KEY=sk-or-v1-...
+export LLM_BASE_URL=https://openrouter.ai/api/v1
+export LLM_MODEL=qwen/qwen3.7-plus
+export LLM_VERIFIER_MODEL=qwen/qwen3.7-plus
 ```
 
-## Usage
+Local retrieval models are downloaded by sentence-transformers on first use:
+
 ```bash
-# Ingest a file
+export EMBEDDING_MODEL=intfloat/multilingual-e5-small
+export RERANKER_MODEL=cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
+```
+
+Check the active runtime config:
+
+```bash
+uv run rag config show
+```
+
+## CLI
+
+```bash
+# Ingest one file or rebuild the bundled corpus
 uv run rag ingest ~/some/book.pdf
-uv run rag ingest ~/some/book.epub
 uv run rag ingest ~/notes/file.md
+uv run rag rebuild data/markdowns/*.md data/pdfs/*.pdf data/epubs/*.epub
 
-# Query
-uv run rag query "What is the main risk model in chapter 3?" --trace
+# Ask with the V3.1 default: hybrid + rerank + small-to-big
+uv run rag query "What is DLBBWME about?" --trace
 
-# Stats
+# Inspect and manage corpus state
 uv run rag stats
+uv run rag collections list
+uv run rag collections delete old_collection
+uv run rag docs list
+uv run rag docs show <doc_id-or-source>
+uv run rag docs reingest <doc_id-or-source>
+uv run rag docs delete <doc_id-or-source>
+
+# Retrieval-only evals are free; full evals call the configured LLM
+uv run rag eval --retrieval-only --gate eval/gates.yaml
+uv run rag compare --retrieval-only
+uv run rag eval
+
+# Inspect persisted runs and evals
+uv run rag runs list
+uv run rag runs show <run_id>
 ```
 
-## What to test
-- T1: Single-PDF roundtrip → 3 questions, expect cited answers
-- T2: Multi-format mix → retriever pulls from all 3
-- T3: Chunking comparison → `uv run rag ingest book.pdf --strategy fixed` then `--strategy sentence`, compare
-- T5: Halluzination → ask about topic NOT in any ingested doc, expect "I don't know"
-- T6: Verifier catch → if a query triggers bad answer, check `verifier.score < 8` in output
+## Dashboard
+
+Start the FastAPI backend:
+
+```bash
+uv run rag serve --port 8000
+```
+
+Start the React dashboard in another shell:
+
+```bash
+cd dashboard
+npm install
+npm run dev
+```
+
+Open `http://127.0.0.1:5173`. The dashboard has Ask, Corpus, Runs, Eval, and Settings views, including upload, delete, reingest, retrieval/full eval, trace, citation validation, and config inspection.
+
+## MCP
+
+Run the MCP server on stdio:
+
+```bash
+uv run rag mcp serve
+```
+
+Tools include search, answer, ingest, delete with confirmation, document list, reingest, collection list, run show, and eval run.
+
+## Current Baseline
+
+Measured on July 6, 2026 against the bundled 4,072-chunk corpus and 23-question eval set:
+
+| Variant | Hit@5 | MRR | Chunk Hit@5 | Chunk MRR |
+|---|---:|---:|---:|---:|
+| V3.1 default (`hybrid` + rerank + small-to-big) | 100% | 0.96 | 91% | 0.77 |
+
+The retrieval gate passes:
+
+```bash
+uv run rag eval --retrieval-only --gate eval/gates.yaml
+```
+
+Full answer gates additionally check fragments, refusal behavior, verifier score, and citation validity. They require `OPENROUTER_API_KEY`.
+
+## More
+
+See [documentation.md](documentation.md) for architecture, CLI/API details, evaluation schema, gates, and the test plan.
