@@ -1,7 +1,11 @@
 .venv/
+.run/
+.pytest_cache/
+.claude/settings.local.json
 __pycache__/
 *.pyc
 chroma_db/
 uv.lock
 *.egg-info/
 dist/
+node_modules/
