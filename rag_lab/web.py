@@ -1,15 +1,18 @@
-import hashlib
-import json
 import tempfile
 from pathlib import Path
 
-from fastapi import FastAPI, File, UploadFile, Form
+from fastapi import FastAPI, File, HTTPException, UploadFile, Form
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 from .parsers import pick_parser
-from . import chunker, embedder, vector_store
-from .retriever import retrieve
+from . import ingestion, runs, vector_store
+from .config import (
+    DEFAULT_COLLECTION, EMBEDDING_MODEL, LLM_BASE_URL, LLM_MODEL,
+    LLM_VERIFIER_MODEL, RERANKER_MODEL, get_api_key,
+)
+from .retriever import RetrievalConfig, retrieve
 
 app = FastAPI(title="rag-lab test console")
 
@@ -20,164 +23,484 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-PAGE = """<!DOCTYPE html>
+PAGE = """<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>rag-lab test console</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RAG Lab</title>
 <style>
-:root{--bg:#0d1117;--surface:#161b22;--border:#30363d;--text:#c9d1d9;--dim:#8b949e;--accent:#58a6ff;--green:#3fb950;--red:#f85149;--yellow:#d2991d}
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.5;padding:20px;max-width:960px;margin:0 auto}
-h1{font-size:20px;margin-bottom:20px;color:var(--accent)}
-h2{font-size:14px;text-transform:uppercase;letter-spacing:0.5px;color:var(--dim);margin-bottom:8px}
-.panel{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:16px}
-.row{display:flex;gap:12px;flex-wrap:wrap}
-.col{flex:1;min-width:200px}
-label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
-input,select,textarea{width:100%;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:13px;font-family:inherit}
-textarea{resize:vertical;min-height:60px}
-button{padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:4px;font-size:13px;cursor:pointer;font-weight:600}
-button:hover{opacity:0.85}
-button:disabled{opacity:0.4;cursor:not-allowed}
-.status{padding:8px 12px;border-radius:4px;font-size:12px;margin-top:8px;display:none}
-.status.info{background:#1f2937;color:var(--accent);display:block}
-.status.ok{background:#0d3320;color:var(--green);display:block}
-.status.err{background:#3d1214;color:var(--red);display:block}
-.answer-box{background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:12px;margin-top:8px;font-size:13px;white-space:pre-wrap}
-.meta{font-size:11px;color:var(--dim);margin-top:4px}
-.chunk-ref{color:var(--yellow);font-weight:600}
-.tag{display:inline-block;padding:1px 6px;border-radius:3px;font-size:11px;margin-right:4px}
-.tag.grounded{background:#0d3320;color:var(--green)}
-.tag.partial{background:#2e2500;color:var(--yellow)}
-.tag.ungrounded{background:#3d1214;color:var(--red)}
-.trace-entry{margin-top:8px;padding:8px;background:var(--bg);border-radius:4px;font-size:12px;cursor:pointer}
-.trace-entry summary{color:var(--dim)}
-.trace-entry pre{font-size:11px;white-space:pre-wrap;margin-top:4px;max-height:200px;overflow-y:auto}
-.file-drop{border:2px dashed var(--border);border-radius:6px;padding:24px;text-align:center;color:var(--dim);font-size:13px;cursor:pointer;transition:border-color 0.2s}
-.file-drop:hover,.file-drop.dragover{border-color:var(--accent)}
-.spinner{display:inline-block;width:12px;height:12px;border:2px solid var(--dim);border-top-color:var(--accent);border-radius:50%;animation:spin 0.6s linear infinite;margin-right:6px}
-@keyframes spin{to{transform:rotate(360deg)}}
+  :root {
+    --bg: #000;
+    --surface: #1c1c1e;
+    --surface-2: #2c2c2e;
+    --sep: #38383a;
+    --text: #f5f5f7;
+    --text-2: rgba(255,255,255,0.5);
+    --text-3: rgba(255,255,255,0.35);
+    --accent: #0a84ff;
+    --green: #30d158;
+    --yellow: #ffd60a;
+    --red: #ff453a;
+    --ease: cubic-bezier(0.25, 0.1, 0.25, 1.0);
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: var(--sans); -webkit-font-smoothing: antialiased; }
+  body { min-height: 100dvh; padding: 32px 16px 80px; }
+  main { max-width: 780px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+  h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 12px; }
+  .section-title { font-size: 12px; text-transform: uppercase; color: var(--text-2); letter-spacing: 0.5px; margin: 0 0 10px; font-weight: 600; }
+
+  .card {
+    background: var(--surface);
+    border-radius: 16px;
+    padding: 16px 20px;
+    transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease);
+  }
+  .card:hover { transform: scale(1.002); box-shadow: 0 8px 24px rgba(0,0,0,0.35); }
+
+  /* Stats */
+  .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .stat { display: flex; flex-direction: column; gap: 4px; }
+  .stat-value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat-label { font-size: 12px; color: var(--text-2); }
+  .empty-stats { color: var(--text-2); font-size: 14px; }
+
+  /* Inputs */
+  .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+  .field label { font-size: 12px; color: var(--text-2); }
+  select {
+    width: 100%;
+    background: var(--surface-2);
+    color: var(--text);
+    border: none;
+    border-radius: 8px;
+    padding: 8px 10px;
+    font: inherit;
+    outline: none;
+  }
+  input[type="text"], input[type="number"], textarea {
+    width: 100%;
+    background: transparent;
+    color: var(--text);
+    border: none;
+    border-bottom: 0.5px solid var(--sep);
+    border-radius: 10px 10px 0 0;
+    padding: 8px 2px;
+    font: inherit;
+    outline: none;
+    transition: border-color 0.25s var(--ease);
+  }
+  textarea { resize: vertical; min-height: 72px; font-family: var(--sans); }
+  input:focus, textarea:focus { border-bottom-color: var(--accent); }
+  input[type="number"] { -moz-appearance: textfield; }
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+  /* Number stepper */
+  .num { position: relative; }
+  .num .steppers { position: absolute; right: 0; top: 50%; transform: translateY(-50%); display: none; gap: 2px; }
+  .num:hover .steppers, .num:focus-within .steppers { display: flex; }
+  .num .steppers button {
+    width: 22px; height: 22px; border-radius: 6px; border: none;
+    background: var(--surface-2); color: var(--text); cursor: pointer; font-size: 14px; line-height: 1;
+    transition: transform 0.15s var(--ease), background 0.15s var(--ease);
+  }
+  .num .steppers button:hover { background: #3a3a3c; }
+  .num .steppers button:active { transform: scale(0.92); }
+
+  /* Param row */
+  .param-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 600px) { .param-row { grid-template-columns: 1fr; } }
+
+  /* Buttons */
+  button.btn {
+    appearance: none; border: none; cursor: pointer; font: inherit; font-weight: 600;
+    border-radius: 12px; padding: 11px 18px; font-size: 14px;
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    transition: transform 0.15s var(--ease), background 0.2s var(--ease), opacity 0.2s var(--ease);
+  }
+  button.btn.sm { border-radius: 8px; padding: 7px 12px; font-size: 13px; }
+  button.btn.primary { background: var(--accent); color: #fff; }
+  button.btn.primary:hover { background: #1a8fff; }
+  button.btn.secondary { background: rgba(255,255,255,0.1); color: var(--text); }
+  button.btn.secondary:hover { background: rgba(255,255,255,0.14); }
+  button.btn:active { transform: scale(0.97); }
+  button.btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+  button.btn:focus-visible, input:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+
+  /* Drop zone */
+  .dropzone {
+    height: 120px; border: 1.5px dashed var(--sep); border-radius: 12px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+    color: var(--text-2); cursor: pointer; transition: border-color 0.2s var(--ease), background 0.2s var(--ease);
+    text-align: center; padding: 8px;
+  }
+  .dropzone:hover, .dropzone.drag { border-color: var(--accent); background: rgba(10,132,255,0.06); color: var(--text); }
+  .dropzone svg { width: 28px; height: 28px; opacity: 0.7; }
+  .dropzone .fname { color: var(--text); font-size: 13px; }
+  .dz-actions { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
+
+  /* Spinner */
+  .spinner {
+    width: 14px; height: 14px; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff;
+    animation: spin 0.6s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Badges */
+  .badge {
+    display: inline-flex; align-items: center; border-radius: 20px; padding: 4px 8px;
+    font-size: 11px; font-weight: 600; line-height: 1;
+  }
+  .badge.mono { font-family: var(--mono); font-weight: 500; background: rgba(255,255,255,0.08); color: var(--text); }
+  .badge.score-high { background: rgba(48,209,88,0.15); color: var(--green); }
+  .badge.score-mid  { background: rgba(255,214,10,0.15); color: var(--yellow); }
+  .badge.score-low  { background: rgba(255,69,58,0.15); color: var(--red); }
+
+  /* Answer */
+  .answer { animation: rise 0.3s var(--ease) both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .answer-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+  .answer-text { font-size: 15px; line-height: 1.55; white-space: pre-wrap; }
+  .chunks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .trace-list { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+  details.trace { background: var(--surface-2); border-radius: 10px; overflow: hidden; }
+  details.trace summary {
+    list-style: none; cursor: pointer; padding: 10px 12px;
+    display: flex; align-items: center; gap: 10px; font-size: 13px;
+  }
+  details.trace summary::-webkit-details-marker { display: none; }
+  details.trace .body {
+    max-height: 0; overflow: hidden; transition: max-height 0.25s var(--ease);
+  }
+  details.trace[open] .body { max-height: 600px; }
+  details.trace pre {
+    margin: 0; padding: 0 12px 12px; font-family: var(--mono); font-size: 12px;
+    color: var(--text); white-space: pre-wrap; word-break: break-word; max-height: 380px; overflow: auto;
+  }
+
+  /* Toast */
+  #toast {
+    position: fixed; top: 16px; left: 50%; transform: translate(-50%, -150%);
+    background: rgba(40,40,42,0.7); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    color: var(--text); padding: 10px 16px; border-radius: 12px; font-size: 13px;
+    transition: transform 0.35s var(--ease); z-index: 100;
+    border: 0.5px solid rgba(255,255,255,0.1);
+  }
+  #toast.show { transform: translate(-50%, 0); }
+
+  /* Net banner */
+  #net-banner {
+    position: sticky; top: 0; background: rgba(255,69,58,0.15); color: var(--red);
+    padding: 10px 14px; border-radius: 10px; font-size: 13px; margin-bottom: 12px;
+    border: 0.5px solid rgba(255,69,58,0.3); display: none;
+  }
+  #net-banner.show { display: block; }
+
+  .inline-error { color: var(--red); font-size: 13px; margin-top: 8px; min-height: 0; }
+  .muted { color: var(--text-2); font-size: 13px; }
 </style>
 </head>
 <body>
-<h1>rag-lab test console</h1>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <main>
+    <div id="net-banner" role="alert">Network connection lost. The backend is unreachable.</div>
+    <h1>RAG Lab</h1>
 
-<div class="panel">
-  <h2>Ingest</h2>
-  <div class="file-drop" id="dropzone">Drop a PDF, EPUB, or Markdown file here — or click to browse</div>
-  <input type="file" id="fileinput" accept=".pdf,.epub,.md,.markdown" style="display:none">
-  <div class="row" style="margin-top:8px">
-    <div class="col"><label>Strategy</label><select id="strategy"><option value="sentence">Sentence</option><option value="fixed">Fixed</option></select></div>
-    <div class="col"><label>Chunk size</label><input id="chunksize" type="number" value="512" min="64" max="4096"></div>
-    <div class="col"><label>Overlap</label><input id="overlap" type="number" value="64" min="0" max="2048"></div>
-  </div>
-  <button id="ingestbtn" style="margin-top:8px">Ingest</button>
-  <div id="ingeststatus" class="status"></div>
-</div>
+    <section class="card" aria-labelledby="stats-title">
+      <div class="section-title" id="stats-title">Collection</div>
+      <div id="stats-body">
+        <div class="empty-stats">Loading…</div>
+      </div>
+    </section>
 
-<div class="panel">
-  <h2>Query</h2>
-  <div class="row">
-    <div class="col" style="flex:2"><label>Question</label><textarea id="question" placeholder="Ask something about the ingested documents..."></textarea></div>
-    <div class="col"><label>Top-K</label><input id="topk" type="number" value="20" min="1" max="100"></div>
-    <div class="col"><label>Min Score</label><input id="minscore" type="number" value="8" min="1" max="10"></div>
-  </div>
-  <button id="querybtn" style="margin-top:8px">Query</button>
-  <div id="querystatus" class="status"></div>
-  <div id="answerarea" style="display:none;margin-top:8px">
-    <div class="answer-box" id="answertext"></div>
-    <div class="meta" id="verdictmeta"></div>
-    <div id="traces"></div>
-  </div>
-</div>
+    <section class="card" aria-labelledby="ingest-title">
+      <div class="section-title" id="ingest-title">Ingest</div>
+      <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Drop a file here or press Enter to browse">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M7 18a4 4 0 0 1-.6-7.96A6 6 0 0 1 18 9.5a4.5 4.5 0 0 1-.5 8.5"/>
+          <path d="M12 12v8"/>
+          <path d="M9 15l3-3 3 3"/>
+        </svg>
+        <div id="dz-label">Drop file or click to browse</div>
+      </div>
+      <input id="file-input" type="file" hidden />
+      <div class="dz-actions">
+        <button class="btn secondary sm" id="dz-clear" type="button" disabled>Clear</button>
+        <button class="btn primary sm" id="ingest-btn" type="button" disabled>Ingest</button>
+      </div>
+      <div class="inline-error" id="ingest-error" role="alert"></div>
+    </section>
 
-<div class="panel">
-  <h2>Stats</h2>
-  <div id="statsbox"><span class="spinner"></span> loading...</div>
-</div>
+    <section class="card" aria-labelledby="query-title">
+      <div class="section-title" id="query-title">Query</div>
+      <div class="field">
+        <label for="q">Question</label>
+        <textarea id="q" placeholder="Ask anything about your documents…"></textarea>
+      </div>
+      <div class="param-row">
+        <div class="field num">
+          <label for="topk">Child candidates</label>
+          <input id="topk" type="number" min="1" max="50" step="1" value="5" />
+          <div class="steppers" aria-hidden="true">
+            <button type="button" data-step="-1" tabindex="-1">−</button>
+            <button type="button" data-step="1" tabindex="-1">+</button>
+          </div>
+        </div>
+        <div class="field">
+          <label for="mode">Retrieval mode</label>
+          <select id="mode">
+            <option value="hybrid" selected>Hybrid (vector + BM25 + rerank)</option>
+            <option value="vector">Vector only</option>
+            <option value="lexical">Lexical (BM25) only</option>
+          </select>
+        </div>
+      </div>
+      <div class="dz-actions">
+        <button class="btn primary" id="ask-btn" type="button">Ask</button>
+      </div>
+      <div class="inline-error" id="query-error" role="alert"></div>
+    </section>
+
+    <section class="card" id="answer-card" aria-labelledby="answer-title" hidden>
+      <div class="section-title" id="answer-title">Answer</div>
+      <div id="answer-body"></div>
+    </section>
+  </main>
 
 <script>
-const $=s=>document.getElementById(s);
-const status=(el,cls,msg)=>{el.className='status '+cls;el.textContent=msg};
-const spin=(btn,on)=>{btn.disabled=on;btn.innerHTML=on?'<span class="spinner"></span> Working...':btn.dataset.label};
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const toast = $("#toast");
+  const banner = $("#net-banner");
 
-$('fileinput').dataset.label||($('fileinput').dataset.label='');
-$('ingestbtn').dataset.label='Ingest';
-$('querybtn').dataset.label='Query';
+  function showToast(msg) {
+    toast.textContent = msg;
+    toast.classList.add("show");
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(() => toast.classList.remove("show"), 3000);
+  }
+  function netError(on) { banner.classList.toggle("show", !!on); }
 
-$('dropzone').onclick=()=>$('fileinput').click();
-$('fileinput').onchange=()=>{
-  const f=$('fileinput').files[0];
-  if(f) $('dropzone').textContent=f.name+' ('+(f.size/1024).toFixed(1)+' KB)';
-};
-['dragenter','dragover'].forEach(e=>$('dropzone').addEventListener(e,ev=>{ev.preventDefault();$('dropzone').classList.add('dragover')}));
-['dragleave','drop'].forEach(e=>$('dropzone').addEventListener(e,ev=>{ev.preventDefault();$('dropzone').classList.remove('dragover')}));
-$('dropzone').addEventListener('drop',ev=>{
-  const f=ev.dataTransfer.files[0];
-  if(f){$('fileinput').files=ev.dataTransfer.files;$('dropzone').textContent=f.name+' ('+(f.size/1024).toFixed(1)+' KB)'}
-});
+  async function api(path, opts = {}) {
+    try {
+      const res = await fetch(path, opts);
+      netError(false);
+      if (!res.ok) {
+        let msg = res.status + " " + res.statusText;
+        try {
+          const body = await res.json();
+          if (body && body.detail) msg = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
+        } catch (_) {}
+        throw new Error(msg);
+      }
+      const ct = res.headers.get("content-type") || "";
+      return ct.includes("json") ? res.json() : res.text();
+    } catch (e) {
+      if (e instanceof TypeError) netError(true);
+      throw e;
+    }
+  }
 
-$('ingestbtn').onclick=async()=>{
-  const f=$('fileinput').files[0];
-  if(!f){status($('ingeststatus'),'err','No file selected');return}
-  spin($('ingestbtn'),true);
-  status($('ingeststatus'),'info','Ingesting...');
-  const fd=new FormData();
-  fd.append('file',f);
-  fd.append('strategy',$('strategy').value);
-  fd.append('chunk_size',$('chunksize').value);
-  fd.append('overlap',$('overlap').value);
-  try{
-    const r=await fetch('/api/ingest',{method:'POST',body:fd});
-    const j=await r.json();
-    if(r.ok)status($('ingeststatus'),'ok','Ingested '+j.chunks+' chunks from '+f.name);
-    else status($('ingeststatus'),'err',j.error||'Ingest failed');
-  }catch(e){status($('ingeststatus'),'err','Error: '+e.message)}
-  spin($('ingestbtn'),false);
+  function scoreClass(s) {
+    if (s == null) return "score-mid";
+    if (s >= 0.75) return "score-high";
+    if (s >= 0.4) return "score-mid";
+    return "score-low";
+  }
+  function verdictText(s) {
+    if (s == null) return "Result";
+    if (s >= 0.75) return "Strong match";
+    if (s >= 0.4) return "Partial match";
+    return "Weak match";
+  }
+  function fmtScore(s) { return s == null ? "—" : Number(s).toFixed(2); }
+
+  // ----- Stats -----
+  async function loadStats() {
+    const body = $("#stats-body");
+    try {
+      const s = await api("/api/stats");
+      const docs = s.documents ?? s.docs ?? 0;
+      const chunks = s.chunks ?? s.chunk_count ?? 0;
+      const status = s.status ?? (chunks ? "ready" : "empty");
+      if (!docs && !chunks) {
+        body.innerHTML = '<div class="empty-stats">No documents ingested yet</div>';
+        return;
+      }
+      body.innerHTML = `
+        <div class="stats-grid">
+          <div class="stat"><div class="stat-value">${docs}</div><div class="stat-label">Documents</div></div>
+          <div class="stat"><div class="stat-value">${chunks}</div><div class="stat-label">Chunks</div></div>
+          <div class="stat"><div class="stat-value" style="font-size:14px;text-transform:capitalize;padding-top:8px">${status}</div><div class="stat-label">Status</div></div>
+        </div>`;
+    } catch (e) {
+      body.innerHTML = '<div class="empty-stats">Unable to load stats</div>';
+    }
+  }
+
+  // ----- Ingest -----
+  const dz = $("#dropzone");
+  const fi = $("#file-input");
+  const dzLabel = $("#dz-label");
+  const ingestBtn = $("#ingest-btn");
+  const clearBtn = $("#dz-clear");
+  const ingestErr = $("#ingest-error");
+  let pendingFile = null;
+
+  function setFile(f) {
+    pendingFile = f || null;
+    if (f) {
+      dzLabel.innerHTML = `<span class="fname">${f.name}</span><div class="muted" style="font-size:12px;margin-top:2px">${(f.size/1024).toFixed(1)} KB</div>`;
+      ingestBtn.disabled = false; clearBtn.disabled = false;
+    } else {
+      dzLabel.textContent = "Drop file or click to browse";
+      ingestBtn.disabled = true; clearBtn.disabled = true;
+      fi.value = "";
+    }
+  }
+
+  dz.addEventListener("click", () => fi.click());
+  dz.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fi.click(); }
+  });
+  fi.addEventListener("change", () => setFile(fi.files[0]));
+  ["dragenter","dragover"].forEach(ev => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("drag"); }));
+  ["dragleave","drop"].forEach(ev => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove("drag"); }));
+  dz.addEventListener("drop", (e) => { if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); });
+  clearBtn.addEventListener("click", () => { setFile(null); ingestErr.textContent = ""; });
+
+  ingestBtn.addEventListener("click", async () => {
+    if (!pendingFile) return;
+    ingestErr.textContent = "";
+    ingestBtn.disabled = true;
+    const orig = ingestBtn.innerHTML;
+    ingestBtn.innerHTML = '<span class="spinner"></span> Ingesting…';
+    try {
+      const fd = new FormData();
+      fd.append("file", pendingFile);
+      await api("/api/ingest", { method: "POST", body: fd });
+      showToast("Ingested " + pendingFile.name);
+      setFile(null);
+      loadStats();
+    } catch (e) {
+      ingestErr.textContent = "Ingest failed: " + e.message;
+      setFile(null);
+    } finally {
+      ingestBtn.innerHTML = orig;
+      ingestBtn.disabled = !pendingFile;
+    }
+  });
+
+  // ----- Number steppers -----
+  document.querySelectorAll(".num").forEach(wrap => {
+    const input = wrap.querySelector("input[type=number]");
+    wrap.querySelectorAll(".steppers button").forEach(b => {
+      b.addEventListener("click", () => {
+        const step = parseFloat(b.dataset.step);
+        const val = parseFloat(input.value || "0") + step;
+        const min = input.min !== "" ? parseFloat(input.min) : -Infinity;
+        const max = input.max !== "" ? parseFloat(input.max) : Infinity;
+        const clamped = Math.min(max, Math.max(min, val));
+        input.value = step % 1 === 0 ? Math.round(clamped) : clamped.toFixed(1);
+      });
+    });
+  });
+
+  // ----- Query -----
+  const askBtn = $("#ask-btn");
+  const qErr = $("#query-error");
+  const answerCard = $("#answer-card");
+  const answerBody = $("#answer-body");
+
+  function renderAnswer(r) {
+    // Normalize backend response: { answer, verifier:{score,verdict,...}, trace:[...], iterations, partial }
+    const rawScore = (r.verifier && typeof r.verifier.score === "number") ? r.verifier.score : r.score;
+    const score = typeof rawScore === "number" ? Math.max(0, Math.min(1, rawScore / 10)) : null;
+    const cls = scoreClass(score);
+    const verdict = (r.verifier && r.verifier.verdict) ? r.verifier.verdict : verdictText(score);
+
+    // Extract chunk citations like [abc123-0] from the answer text for the badges row
+    const answer = r.answer ?? r.response ?? "(no answer)";
+    const citations = Array.from(answer.matchAll(/\[([a-z0-9-]+)\]/gi)).map(m => m[1]);
+
+    const trace = r.trace || r.iterations || [];
+
+    let html = `<div class="answer">
+      <div class="answer-head">
+        <span class="badge ${cls}">${escapeHtml(verdict)} · ${fmtScore(score)}</span>
+      </div>
+      <div class="answer-text">${escapeHtml(answer)}</div>`;
+
+    if (citations.length) {
+      html += '<div class="chunks">';
+      citations.forEach(c => {
+        html += `<span class="badge mono">${escapeHtml(c)}</span>`;
+      });
+      html += '</div>';
+    }
+
+    if (trace.length) {
+      html += '<div class="trace-list">';
+      trace.forEach((t, i) => {
+        const tRaw = t.verifier_score ?? t.score;
+        const tScore = typeof tRaw === "number" ? Math.max(0, Math.min(1, tRaw / 10)) : null;
+        const tCls = scoreClass(tScore);
+        const content = JSON.stringify(t, null, 2);
+        html += `<details class="trace">
+          <summary>
+            <span class="muted" style="font-family:var(--mono)">#${i+1}</span>
+            <span class="badge ${tCls}">${fmtScore(tScore)}</span>
+            <span class="muted" style="margin-left:auto">expand</span>
+          </summary>
+          <div class="body"><pre>${escapeHtml(content)}</pre></div>
+        </details>`;
+      });
+      html += '</div>';
+    }
+    html += '</div>';
+    answerBody.innerHTML = html;
+    answerCard.hidden = false;
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+  }
+
+  askBtn.addEventListener("click", async () => {
+    const question = $("#q").value.trim();
+    qErr.textContent = "";
+    if (!question) { qErr.textContent = "Please enter a question."; return; }
+    askBtn.disabled = true;
+    const orig = askBtn.innerHTML;
+    askBtn.innerHTML = '<span class="spinner"></span> Thinking…';
+    try {
+      const r = await api("/api/query", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question,
+          rerank_top: parseInt($("#topk").value, 10),
+          mode: $("#mode").value,
+        }),
+      });
+      renderAnswer(r);
+    } catch (e) {
+      qErr.textContent = "Query failed: " + e.message;
+    } finally {
+      askBtn.innerHTML = orig;
+      askBtn.disabled = false;
+    }
+  });
+
   loadStats();
-};
-
-$('querybtn').onclick=async()=>{
-  const q=$('question').value.trim();
-  if(!q){status($('querystatus'),'err','Enter a question');return}
-  spin($('querybtn'),true);
-  status($('querystatus'),'info','Querying...');
-  $('answerarea').style.display='none';
-  try{
-    const r=await fetch('/api/query',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({question:q,top_k:+$('topk').value,min_score:+$('minscore').value})
-    });
-    const j=await r.json();
-    if(!r.ok){status($('querystatus'),'err',j.error||'Query failed');spin($('querybtn'),false);return}
-    status($('querystatus'),'ok','Done in '+j.iterations+' iteration(s)');
-    $('answertext').textContent=j.answer;
-    const v=j.verifier||{};
-    const vcls=v.verdict==='GROUNDED'?'grounded':v.verdict==='PARTIAL'?'partial':'ungrounded';
-    $('verdictmeta').innerHTML='<span class="tag '+vcls+'">'+v.verdict+'</span> score: '+v.score+'/10'+(j.partial?' <span class="tag ungrounded">max iters</span>':'');
-    $('traces').innerHTML='';
-    if(j.trace) j.trace.forEach((t,i)=>{
-      const d=document.createElement('details');d.className='trace-entry';
-      d.innerHTML='<summary>Iter '+t.iter+' — score '+t.verifier_score+'</summary><pre>Query: '+esc(t.query)+'\\n\\nAnswer: '+esc(t.answer||'')+'\\n\\nIssues: '+esc(JSON.stringify(t.issues||[]))+'</pre>';
-      $('traces').appendChild(d);
-    });
-    $('answerarea').style.display='block';
-  }catch(e){status($('querystatus'),'err','Error: '+e.message)}
-  spin($('querybtn'),false);
-};
-
-async function loadStats(){
-  try{
-    const r=await fetch('/api/stats');
-    const j=await r.json();
-    $('statsbox').innerHTML='Chunks: <b>'+j.chunk_count+'</b> &nbsp;|&nbsp; DB: <b>'+j.db_path+'</b> &nbsp;|&nbsp; Embedder: all-MiniLM-L6-v2 (CPU) &nbsp;|&nbsp; LLM: DeepSeek deepseek-chat';
-  }catch(e){$('statsbox').textContent='Stats unavailable'}
-}
-function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
-loadStats();
+})();
 </script>
 </body>
 </html>"""
@@ -187,67 +510,251 @@ async def index():
     return PAGE
 
 @app.post("/api/ingest")
-async def api_ingest(
+def api_ingest(
     file: UploadFile = File(...),
     strategy: str = Form("sentence"),
     chunk_size: int = Form(512),
     overlap: int = Form(64),
 ):
+    suffix = Path(file.filename or "").suffix
+    if suffix.lower() not in {".pdf", ".epub", ".md", ".markdown"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {suffix or '(none)'}")
     try:
-        suffix = Path(file.filename).suffix
-        if suffix.lower() not in {".pdf", ".epub", ".md", ".markdown"}:
-            return {"error": f"Unsupported file type: {suffix}"}
-
-        content = await file.read()
+        content = file.file.read()
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(content)
             tmp_path = tmp.name
+        try:
+            parser = pick_parser(tmp_path)
+            text = parser(tmp_path)
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
 
-        parser = pick_parser(tmp_path)
-        text = parser(tmp_path)
-        Path(tmp_path).unlink()
-
-        if strategy == "fixed":
-            chunks = chunker.chunk_fixed(text, size=chunk_size, overlap=overlap)
-        else:
-            chunks = chunker.chunk_sentence(text, target_size=chunk_size, overlap=max(1, overlap // 64))
+        chunks = ingestion.make_chunks(text, strategy=strategy, chunk_size=chunk_size, overlap=overlap)
 
         if not chunks:
-            return {"error": "No text extracted from file"}
+            raise HTTPException(status_code=400, detail="No text extracted from file")
 
-        vecs = embedder.embed([c.text for c in chunks])
-        sha = hashlib.sha256(content).hexdigest()[:10]
-        metadatas = [{"source": file.filename, "chunk_idx": i, "strategy": strategy, "file_sha": sha} for i in range(len(chunks))]
-        ids = [f"{sha}-{i}" for i in range(len(chunks))]
-        vector_store.upsert(chunks, vecs, metadatas, ids)
-        return {"status": "ok", "chunks": len(chunks), "filename": file.filename}
+        result = ingestion.ingest_text(
+            file.filename or "upload",
+            content,
+            text,
+            strategy=strategy,
+            chunk_size=chunk_size,
+            overlap=overlap,
+        )
+        return {"status": "ok", "chunks": result["chunks"], "filename": file.filename, "doc_id": result["file_sha"]}
+    except HTTPException:
+        raise
     except ValueError as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        return {"error": f"Ingest failed: {e}"}
+        raise HTTPException(status_code=500, detail=f"Ingest failed: {e}")
+
+class QueryRequest(BaseModel):
+    question: str
+    mode: str = Field("hybrid", pattern="^(vector|lexical|hybrid)$")
+    top_k: int = Field(50, ge=1, le=200)
+    rerank_top: int = Field(5, ge=1, le=50)
+    use_reranker: bool = True
+    small_to_big: bool = True
+    parent_top_k: int = Field(5, ge=1, le=50)
+    max_context_chars: int = Field(12000, ge=1, le=100000)
+    min_score: int = Field(8, ge=1, le=10)
+
+class EvalRequest(BaseModel):
+    questions_file: str = "eval/questions.yaml"
+    retrieval_only: bool = True
+    mode: str = Field("hybrid", pattern="^(vector|lexical|hybrid)$")
+    top_k: int = Field(50, ge=1, le=200)
+    rerank_top: int = Field(5, ge=1, le=50)
+    use_reranker: bool = True
+    small_to_big: bool = True
+    parent_top_k: int = Field(5, ge=1, le=50)
+    max_context_chars: int = Field(12000, ge=1, le=100000)
+    variant: str = "dashboard"
+
+class ReingestRequest(BaseModel):
+    strategy: str = Field("sentence", pattern="^(fixed|sentence)$")
+    chunk_size: int = Field(512, ge=64, le=5000)
+    overlap: int = Field(64, ge=0, le=1000)
+    parent_size: int = Field(4, ge=1, le=50)
+
+def _compact_chunk(chunk: dict) -> dict:
+    meta = chunk.get("metadata") or {}
+    return {
+        "id": chunk.get("id"),
+        "citation": chunk.get("citation") or meta.get("citation"),
+        "source": meta.get("source"),
+        "distance": chunk.get("distance"),
+        "rerank_score": chunk.get("rerank_score"),
+        "rrf_score": chunk.get("rrf_score"),
+        "text": chunk.get("text"),
+        "metadata": meta,
+    }
 
 @app.post("/api/query")
-async def api_query(data: dict):
-    question = data.get("question", "")
-    top_k = data.get("top_k", 20)
-    min_score = data.get("min_score", 8)
-    if not question.strip():
-        return {"error": "Question is required"}
+def api_query(req: QueryRequest):
+    if not req.question.strip():
+        raise HTTPException(status_code=400, detail="Question is required")
     try:
-        result = retrieve(question, top_k=top_k, min_score=min_score)
+        cfg = RetrievalConfig(
+            mode=req.mode, top_k=req.top_k, rerank_top=req.rerank_top,
+            use_reranker=req.use_reranker, small_to_big=req.small_to_big,
+            parent_top_k=req.parent_top_k, max_context_chars=req.max_context_chars,
+            min_score=req.min_score,
+        )
+        result = retrieve(req.question, cfg)
         return {
             "answer": result["answer"],
             "verifier": result["verifier"],
+            "citation_validation": result.get("citation_validation"),
             "iterations": result["iterations"],
             "trace": result.get("trace", []),
             "partial": result.get("partial", False),
+            "run_id": result.get("run_id"),
+            "citations": [c.get("citation") for c in result.get("chunks", [])],
+            "chunks": [_compact_chunk(c) for c in result.get("chunks", [])],
+            "usage": result.get("usage", {}),
+            "latency_ms": result.get("latency_ms"),
         }
     except Exception as e:
-        return {"error": f"Query failed: {e}"}
+        raise HTTPException(status_code=500, detail=f"Query failed: {e}")
+
+@app.get("/api/config")
+def api_config():
+    return {
+        "llm_base_url": LLM_BASE_URL,
+        "llm_model": LLM_MODEL,
+        "llm_verifier_model": LLM_VERIFIER_MODEL,
+        "api_key_present": bool(get_api_key()),
+        "embedding_model": EMBEDDING_MODEL,
+        "reranker_model": RERANKER_MODEL,
+        "default_collection": DEFAULT_COLLECTION,
+        "active_collection": vector_store.default_collection_name(),
+        "db_path": vector_store._PERSIST_DIR,
+    }
+
+@app.get("/api/collections")
+def api_collections():
+    return {"collections": vector_store.list_collections()}
+
+@app.delete("/api/collections/{name}")
+def api_delete_collection(name: str):
+    if name == vector_store.default_collection_name():
+        raise HTTPException(status_code=400, detail="Refusing to delete the active collection")
+    if not vector_store.delete_collection(name):
+        raise HTTPException(status_code=404, detail=f"Collection not found: {name}")
+    return {"status": "ok", "collection": name}
+
+@app.get("/api/docs")
+def api_docs():
+    from . import manifest
+    return {"documents": vector_store.list_documents(), "manifest": manifest.list_documents()}
+
+@app.get("/api/docs/{doc_id}")
+def api_doc(doc_id: str):
+    from . import manifest
+    manifest_doc = manifest.get_document(doc_id)
+    for d in vector_store.list_documents():
+        if doc_id in {d.get("doc_id"), d.get("file_sha"), d.get("source"), d.get("basename")}:
+            return {"manifest": manifest_doc, "indexed": d}
+    if manifest_doc:
+        return {"manifest": manifest_doc, "indexed": None}
+    raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
+
+@app.delete("/api/docs/{doc_id}")
+def api_delete_doc(doc_id: str):
+    removed = vector_store.delete_document(doc_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
+    return {"status": "ok", "deleted_chunks": removed, "identifier": doc_id}
+
+@app.post("/api/docs/{doc_id}/reingest")
+def api_reingest_doc(doc_id: str, req: ReingestRequest):
+    from . import manifest
+    manifest_doc = manifest.get_document(doc_id)
+    indexed_doc = next((
+        d for d in vector_store.list_documents()
+        if doc_id in {d.get("doc_id"), d.get("file_sha"), d.get("source"), d.get("basename")}
+    ), None)
+    source = (manifest_doc or indexed_doc or {}).get("source")
+    if not source:
+        raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
+    path = Path(source)
+    if not path.exists():
+        raise HTTPException(status_code=400, detail=f"Source file no longer exists: {path}")
+    try:
+        content = path.read_bytes()
+        text = pick_parser(str(path))(str(path))
+        result = ingestion.ingest_text(
+            str(path),
+            content,
+            text,
+            strategy=req.strategy,
+            chunk_size=req.chunk_size,
+            overlap=req.overlap,
+            parent_size=req.parent_size,
+        )
+        return {"status": "ok", "source": str(path), **result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Reingest failed: {e}")
+
+@app.get("/api/runs")
+def api_runs(limit: int = 50):
+    return {"runs": runs.list_runs(limit=limit)}
+
+@app.get("/api/runs/{run_id}")
+def api_run(run_id: int):
+    run = runs.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
+    return run
+
+@app.get("/api/evals")
+def api_evals(limit: int = 50):
+    return {"evals": runs.list_evals(limit=limit)}
+
+@app.get("/api/evals/{eval_id}")
+def api_eval(eval_id: int):
+    ev = runs.get_eval(eval_id)
+    if ev is None:
+        raise HTTPException(status_code=404, detail=f"Eval not found: {eval_id}")
+    return ev
+
+@app.post("/api/eval")
+def api_run_eval(req: EvalRequest):
+    try:
+        from . import evaluation
+        questions = evaluation.load_questions(req.questions_file)
+        cfg = RetrievalConfig(
+            mode=req.mode,
+            top_k=req.top_k,
+            rerank_top=req.rerank_top,
+            use_reranker=req.use_reranker,
+            small_to_big=req.small_to_big,
+            parent_top_k=req.parent_top_k,
+            max_context_chars=req.max_context_chars,
+        )
+        report = evaluation.evaluate(questions, cfg, retrieval_only=req.retrieval_only)
+        report["config"]["collection"] = vector_store.default_collection_name()
+        eval_id = runs.log_eval(req.variant, report["config"], report["summary"], report["per_question"])
+        return {"status": "ok", "eval_id": eval_id, **report}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Eval failed: {e}")
 
 @app.get("/api/stats")
-async def api_stats():
+def api_stats():
+    meta = vector_store.collection_metadata()
     return {
         "chunk_count": vector_store.count(),
+        "documents": vector_store.distinct_sources(),
         "db_path": vector_store._PERSIST_DIR,
+        "collection": vector_store.default_collection_name(),
+        "embedding_model": meta.get("embedding_model"),
+        "chunking_version": meta.get("chunking_version"),
     }
