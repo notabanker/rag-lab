@@ -1,6 +1,6 @@
 import httpx
 import json
-from .config import get_api_key, LLM_BASE_URL, LLM_VERIFIER_MODEL
+from .config import require_api_key, LLM_BASE_URL, LLM_VERIFIER_MODEL
 
 CHAT_URL = f"{LLM_BASE_URL}/chat/completions"
 
@@ -30,7 +30,7 @@ def verify(question: str, answer: str, chunks: list[dict], model: str = None) ->
     user_prompt = f"QUESTION: {question}\n\nCONTEXT:\n{context}\n\nANSWER: {answer}"
 
     headers = {
-        "Authorization": f"Bearer {get_api_key()}",
+        "Authorization": f"Bearer {require_api_key()}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://github.com/notabanker/rag-lab",
         "X-Title": "rag-lab",
@@ -51,14 +51,22 @@ def verify(question: str, answer: str, chunks: list[dict], model: str = None) ->
             r.raise_for_status()
             body = r.json()
             raw = (body.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+        usage = body.get("usage") or {}
+        usage = {
+            "prompt_tokens": usage.get("prompt_tokens", 0),
+            "completion_tokens": usage.get("completion_tokens", 0),
+        }
         if not raw:
-            return {"score": 0, "grounded": False, "issues": ["verifier returned empty response"], "verdict": "ERROR"}
+            return {"score": 0, "grounded": False, "issues": ["verifier returned empty response"], "verdict": "ERROR", "_usage": usage}
         # Strip markdown fences if present
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
         parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            return {"score": 0, "grounded": False, "issues": [f"verifier returned non-object JSON: {raw[:100]}"], "verdict": "ERROR", "_usage": usage}
+        parsed["_usage"] = usage
         return parsed
     except Exception as e:
         return {"score": 0, "grounded": False, "issues": [f"verifier error: {e}"], "verdict": "ERROR"}
