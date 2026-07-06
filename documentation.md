@@ -95,6 +95,7 @@ uv run rag ingest <file> [OPTIONS]
 | `--overlap` | `64` | Overlap between chunks in characters |
 | `--parent-size` | `4` | Child chunks grouped into one parent context for small-to-big retrieval |
 | `--force-model-mismatch` | off | Allow ingest into a legacy or mismatched collection |
+| `--allow-empty` | off | Record a zero-text file in the manifest instead of failing |
 | `--db-path` | `$RAG_DB_PATH` or `~/.local/share/rag-lab/chroma_db` | ChromaDB persist directory (global option) |
 
 **Examples:**
@@ -113,12 +114,14 @@ uv run rag --db-path ~/my_chroma_db ingest report.md
 **Supported formats:** `.pdf`, `.epub`, `.md`, `.markdown`
 
 **What happens:**
-1. Parser extracts raw text from the file
+1. Parser extracts raw text from the file and reports per-section (page/chapter) character counts
 2. Chunker splits text into overlapping chunks (sentence-aware or fixed-size)
 3. Embedder converts each child chunk with `EMBEDDING_MODEL` (default `intfloat/multilingual-e5-small`, CPU)
 4. Metadata records doc ID, parent ID, citation label, chunking version, and embedding model
 5. Any chunks previously ingested from the same file content (matched by SHA-256 prefix) are deleted
 6. ChromaDB upserts chunks with embeddings, metadata, and unique IDs (SHA-256 prefix + index)
+
+**Parse-quality report:** every ingest prints sections, extracted characters, and warnings, and persists the report to the manifest (visible via `rag docs show` and the dashboard Corpus view). Heuristics: zero extracted text (scanned/image-only file), average under 50 chars/page, or more than half the pages empty — all signs of a scanned PDF. Zero-text files are refused by default; `--allow-empty` records them in the manifest (0 chunks) so they show up as known-bad instead of disappearing silently. The web API returns the warnings in the `POST /api/ingest` response.
 
 ### `rag rebuild` — batch-ingest a corpus
 

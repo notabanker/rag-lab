@@ -45,13 +45,13 @@ Current: `--db-path` defaults to `./chroma_db` ([cli.py:32](rag_lab/cli.py:32));
 
 ### A.1 Parse-quality report on ingest — **M**
 *Do this first — it's the instrument that detects the scanned-PDF problem.*
-- [ ] [parsers/pdf.py](rag_lab/parsers/pdf.py): return per-page character counts alongside the text
-- [ ] Define a low-yield heuristic (e.g. avg < 50 chars/page, or >50% empty pages) → "probably scanned"
-- [ ] [ingestion.py](rag_lab/ingestion.py): produce an ingest report — pages/sections, chars extracted, chunks created, warnings
-- [ ] Persist the report in the SQLite manifest ([manifest.py](rag_lab/manifest.py)) per `file_sha`
-- [ ] `rag ingest` prints the report; **refuse by default** when yield ≈ 0 ("no text extracted — scanned PDF? see OCR") with `--allow-empty` override
-- [ ] Surface warnings in `rag docs show`, `POST /api/ingest` response, and the dashboard Corpus view
-- [ ] Tests: text PDF (clean report), empty-text fixture (warning + refusal)
+- [x] [parsers/pdf.py](rag_lab/parsers/pdf.py): return per-page character counts alongside the text
+- [x] Define a low-yield heuristic (e.g. avg < 50 chars/page, or >50% empty pages) → "probably scanned"
+- [x] [ingestion.py](rag_lab/ingestion.py): produce an ingest report — pages/sections, chars extracted, chunks created, warnings
+- [x] Persist the report in the SQLite manifest ([manifest.py](rag_lab/manifest.py)) per `file_sha`
+- [x] `rag ingest` prints the report; **refuse by default** when yield ≈ 0 ("no text extracted — scanned PDF? see OCR") with `--allow-empty` override
+- [x] Surface warnings in `rag docs show`, `POST /api/ingest` response, and the dashboard Corpus view
+- [x] Tests: text PDF (clean report), empty-text fixture (warning + refusal)
 
 ### A.2 OCR fallback for scanned PDFs — **L**
 - [ ] Decide the engine — recommendation: `ocrmypdf` as an optional dependency group

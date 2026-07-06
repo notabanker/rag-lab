@@ -7,7 +7,7 @@ FastMCP when the optional runtime is available.
 from pathlib import Path
 
 from . import evaluation, ingestion, vector_store
-from .parsers import pick_parser
+from .parsers import as_result, pick_parser
 from .retriever import RetrievalConfig, retrieve, retrieve_hits, select_context_chunks
 
 
@@ -96,16 +96,18 @@ def rag_ingest(
     p = Path(path)
     if not p.exists():
         raise ValueError(f"File not found: {path}")
-    text = pick_parser(str(p))(str(p))
+    parsed = as_result(pick_parser(str(p))(str(p)))
+    quality = parsed.quality()
     content = p.read_bytes()
     result = ingestion.ingest_text(
         str(p),
         content,
-        text,
+        parsed.effective_text,
         strategy=strategy,
         chunk_size=chunk_size,
         overlap=overlap,
         parent_size=parent_size,
+        parse_quality=quality,
     )
     return {"status": "ok", "source": str(p), **result}
 

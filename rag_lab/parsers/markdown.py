@@ -1,6 +1,8 @@
 from markdown_it import MarkdownIt
 
-def parse_markdown(path: str) -> str:
+from .base import ParseResult
+
+def parse_markdown(path: str) -> ParseResult:
     with open(path, "r", encoding="utf-8") as f:
         raw = f.read()
     # Strip frontmatter if present
@@ -21,4 +23,5 @@ def parse_markdown(path: str) -> str:
             out.append(tok.content)
         elif tok.type == "code_block" or tok.type == "fence":
             out.append(f"\n\n{tok.content}\n")
-    return "\n".join(out).strip()
+    text = "\n".join(out).strip()
+    return ParseResult(text=text, section_unit="document", section_chars=[len(text)])

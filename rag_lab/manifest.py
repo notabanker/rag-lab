@@ -1,4 +1,5 @@
 """Persistent document manifest for corpus management."""
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +33,10 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(_db_path())
     conn.row_factory = sqlite3.Row
     conn.executescript(_SCHEMA)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(documents)")}
+    if "parse_report" not in cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN parse_report TEXT")
+        conn.commit()
     return conn
 
 
@@ -39,13 +44,13 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def log_document(source: str, file_sha: str, chunk_count: int):
+def log_document(source: str, file_sha: str, chunk_count: int, parse_report: dict | None = None):
     conn = _connect()
     try:
         conn.execute(
             "INSERT OR REPLACE INTO documents "
-            "(doc_id, source, file_sha, parser_version, chunking_version, embedding_model, chunk_count, ingested_at) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "(doc_id, source, file_sha, parser_version, chunking_version, embedding_model, chunk_count, ingested_at, parse_report) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 file_sha,
                 source,
@@ -55,6 +60,7 @@ def log_document(source: str, file_sha: str, chunk_count: int):
                 EMBEDDING_MODEL,
                 chunk_count,
                 _now(),
+                json.dumps(parse_report) if parse_report else None,
             ),
         )
         conn.commit()
@@ -66,7 +72,10 @@ def list_documents() -> list[dict]:
     conn = _connect()
     try:
         rows = conn.execute("SELECT * FROM documents ORDER BY source").fetchall()
-        return [dict(r) for r in rows]
+        docs = [dict(r) for r in rows]
+        for d in docs:
+            d["parse_report"] = json.loads(d["parse_report"]) if d.get("parse_report") else None
+        return docs
     finally:
         conn.close()
 

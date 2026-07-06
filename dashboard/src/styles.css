@@ -71,6 +71,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .rowButton span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .error, .errors { color: var(--bad); }
 .errors { padding-left: 18px; }
+.warn { color: #b45309; font-size: 12.5px; }
 
 @media (max-width: 900px) {
   header { display: grid; align-items: start; }

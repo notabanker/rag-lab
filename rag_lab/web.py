@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .parsers import pick_parser
+from .parsers import as_result, pick_parser
 from . import ingestion, runs, vector_store
 from .config import (
     DEFAULT_COLLECTION, EMBEDDING_MODEL, LLM_BASE_URL, LLM_MODEL,
@@ -526,24 +526,35 @@ def api_ingest(
             tmp_path = tmp.name
         try:
             parser = pick_parser(tmp_path)
-            text = parser(tmp_path)
+            parsed = as_result(parser(tmp_path))
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 
-        chunks = ingestion.make_chunks(text, strategy=strategy, chunk_size=chunk_size, overlap=overlap)
+        quality = parsed.quality()
+        chunks = ingestion.make_chunks(parsed.effective_text, strategy=strategy, chunk_size=chunk_size, overlap=overlap)
 
         if not chunks:
-            raise HTTPException(status_code=400, detail="No text extracted from file")
+            raise HTTPException(
+                status_code=400,
+                detail="No text extracted — scanned PDF? OCR is not supported yet.",
+            )
 
         result = ingestion.ingest_text(
             file.filename or "upload",
             content,
-            text,
+            parsed.effective_text,
             strategy=strategy,
             chunk_size=chunk_size,
             overlap=overlap,
+            parse_quality=quality,
         )
-        return {"status": "ok", "chunks": result["chunks"], "filename": file.filename, "doc_id": result["file_sha"]}
+        return {
+            "status": "ok",
+            "chunks": result["chunks"],
+            "filename": file.filename,
+            "doc_id": result["file_sha"],
+            "warnings": quality["warnings"],
+        }
     except HTTPException:
         raise
     except ValueError as e:

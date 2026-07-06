@@ -84,10 +84,16 @@ def ingest_text(
     overlap: int = 64,
     parent_size: int = 4,
     force_model_mismatch: bool = False,
+    parse_quality: dict | None = None,
 ) -> dict:
+    warnings = (parse_quality or {}).get("warnings", [])
     chunks = make_chunks(text, strategy=strategy, chunk_size=chunk_size, overlap=overlap)
     if not chunks:
-        return {"chunks": 0, "file_sha": content_sha(content)}
+        # Record the known-empty document so it shows up in docs list
+        # (and future syncs can skip it by SHA) without touching the index.
+        file_sha = content_sha(content)
+        manifest.log_document(source, file_sha, 0, parse_report=parse_quality)
+        return {"chunks": 0, "file_sha": file_sha, "warnings": warnings}
     file_sha = content_sha(content)
     metadatas = build_metadatas(source, text, chunks, file_sha, strategy, chunk_size, overlap, parent_size)
     ids = [f"{file_sha}-{i}" for i in range(len(chunks))]
@@ -103,5 +109,5 @@ def ingest_text(
         chunking_version=CHUNKING_VERSION,
         force_model_mismatch=force_model_mismatch,
     )
-    manifest.log_document(source, file_sha, len(chunks))
-    return {"chunks": len(chunks), "file_sha": file_sha}
+    manifest.log_document(source, file_sha, len(chunks), parse_report=parse_quality)
+    return {"chunks": len(chunks), "file_sha": file_sha, "warnings": warnings}

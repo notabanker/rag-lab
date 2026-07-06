@@ -1,3 +1,4 @@
+from .base import ParseResult, as_result
 from .pdf import parse_pdf
 from .epub import parse_epub
 from .markdown import parse_markdown

@@ -26,6 +26,11 @@ type Doc = {
   chunking_version?: string;
 };
 
+type ManifestDoc = {
+  doc_id: string;
+  parse_report?: { warnings?: string[] } | null;
+};
+
 type RunRow = {
   id: number;
   timestamp: string;
@@ -222,7 +227,12 @@ function AskView() {
 
 function CorpusView() {
   const qc = useQueryClient();
-  const docs = useQuery({ queryKey: ["docs"], queryFn: () => api<{ documents: Doc[] }>("/api/docs") });
+  const docs = useQuery({ queryKey: ["docs"], queryFn: () => api<{ documents: Doc[]; manifest?: ManifestDoc[] }>("/api/docs") });
+  const warningsById = new Map(
+    (docs.data?.manifest || [])
+      .filter((m) => m.parse_report?.warnings?.length)
+      .map((m) => [m.doc_id, m.parse_report!.warnings!])
+  );
   const del = useMutation({
     mutationFn: (id: string) => api(`/api/docs/${encodeURIComponent(id)}`, { method: "DELETE" }),
     onSuccess: () => {
@@ -252,7 +262,12 @@ function CorpusView() {
         <tbody>
           {(docs.data?.documents || []).map((doc) => (
             <tr key={doc.doc_id}>
-              <td><code>{doc.doc_id}</code><br /><span>{doc.source}</span></td>
+              <td>
+                <code>{doc.doc_id}</code><br /><span>{doc.source}</span>
+                {warningsById.get(doc.doc_id)?.map((w, i) => (
+                  <div key={i} className="warn">⚠ {w}</div>
+                ))}
+              </td>
               <td>{doc.chunks}</td>
               <td>{doc.strategy || "—"}</td>
               <td>{doc.embedding_model || "—"}</td>
@@ -281,15 +296,17 @@ function CorpusView() {
 function UploadBox() {
   const qc = useQueryClient();
   const [file, setFile] = useState<File | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
   const upload = useMutation({
     mutationFn: async () => {
       if (!file) return null;
       const form = new FormData();
       form.append("file", file);
-      return api("/api/ingest", { method: "POST", body: form });
+      return api<{ warnings?: string[] }>("/api/ingest", { method: "POST", body: form });
     },
-    onSuccess: () => {
+    onSuccess: (res) => {
       setFile(null);
+      setWarnings(res?.warnings || []);
       qc.invalidateQueries({ queryKey: ["docs"] });
       qc.invalidateQueries({ queryKey: ["stats"] });
     }
@@ -302,6 +319,9 @@ function UploadBox() {
         Upload
       </button>
       {upload.error && <span className="error">{(upload.error as Error).message}</span>}
+      {warnings.map((w, i) => (
+        <span key={i} className="warn">⚠ {w}</span>
+      ))}
     </div>
   );
 }

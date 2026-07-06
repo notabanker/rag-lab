@@ -5,7 +5,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .parsers import pick_parser
+from .parsers import as_result, pick_parser
 from . import ingestion, vector_store
 from .config import (
     DEFAULT_COLLECTION, EMBEDDING_MODEL, LLM_BASE_URL, LLM_MODEL,
@@ -52,22 +52,34 @@ def _ingest_one(
     overlap: int,
     parent_size: int,
     force_model_mismatch: bool,
+    allow_empty: bool = False,
 ) -> dict:
     p = Path(file_path)
     if not p.exists():
         raise ValueError(f"File not found: {file_path}")
     console.print(f"[blue]Parsing[/blue] {p.name}...")
-    parser = pick_parser(file_path)
-    text = parser(file_path)
+    parsed = as_result(pick_parser(file_path)(file_path))
+    quality = parsed.quality()
+    console.print(
+        f"[blue]Parsed[/blue] {quality['sections']} {quality['section_unit']}(s), "
+        f"{quality['total_chars']} chars"
+    )
+    for w in quality["warnings"]:
+        console.print(f"[yellow]⚠ {w}[/yellow]")
+    if quality["total_chars"] == 0 and not allow_empty:
+        raise ValueError(
+            "No text extracted — scanned PDF? OCR is not supported yet. "
+            "Use --allow-empty to record the file in the manifest anyway."
+        )
     console.print(f"[blue]Chunking[/blue] strategy={strategy} size={chunk_size} overlap={overlap}...")
-    chunks = ingestion.make_chunks(text, strategy=strategy, chunk_size=chunk_size, overlap=overlap)
-    if not chunks:
-        raise ValueError("No text extracted from file")
-    console.print(f"[blue]Embedding[/blue] {len(chunks)} chunks with {EMBEDDING_MODEL} (CPU)...")
+    chunks = ingestion.make_chunks(parsed.effective_text, strategy=strategy, chunk_size=chunk_size, overlap=overlap)
+    if chunks:
+        console.print(f"[blue]Embedding[/blue] {len(chunks)} chunks with {EMBEDDING_MODEL} (CPU)...")
     result = ingestion.ingest_text(
-        str(p), p.read_bytes(), text,
+        str(p), p.read_bytes(), parsed.effective_text,
         strategy=strategy, chunk_size=chunk_size, overlap=overlap,
         parent_size=parent_size, force_model_mismatch=force_model_mismatch,
+        parse_quality=quality,
     )
     console.print(f"[green]✅ Ingested[/green] {result['chunks']} chunks from {p.name}")
     return result
@@ -80,10 +92,11 @@ def ingest(
     overlap: int = typer.Option(64, "--overlap"),
     parent_size: int = typer.Option(4, "--parent-size", help="Child chunks grouped into one parent context"),
     force_model_mismatch: bool = typer.Option(False, "--force-model-mismatch", help="Allow ingest into a legacy/mismatched collection"),
+    allow_empty: bool = typer.Option(False, "--allow-empty", help="Record a zero-text file in the manifest instead of failing"),
 ):
     """Ingest one file into the vector store."""
     try:
-        _ingest_one(file_path, strategy, chunk_size, overlap, parent_size, force_model_mismatch)
+        _ingest_one(file_path, strategy, chunk_size, overlap, parent_size, force_model_mismatch, allow_empty)
     except ValueError as e:
         typer.echo(f"❌ {e}")
         raise typer.Exit(1)
