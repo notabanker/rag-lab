@@ -1,0 +1,33 @@
+# Named configs for `rag compare`.
+# Fields: name (required), mode, top_k, rerank_top, use_reranker, min_score,
+# max_iters, collection. `collection` lets a variant run against a
+# separately-ingested index (e.g. same corpus chunked differently).
+#
+# The default set is the M2 ablation: vector vs lexical vs hybrid vs hybrid+rerank.
+variants:
+  - name: vector
+    mode: vector
+    use_reranker: false
+    small_to_big: false
+
+  - name: lexical
+    mode: lexical
+    use_reranker: false
+    small_to_big: false
+
+  - name: hybrid
+    mode: hybrid
+    use_reranker: false
+    small_to_big: false
+
+  - name: hybrid-rerank
+    mode: hybrid
+    use_reranker: true
+    small_to_big: false
+
+  - name: v3-hybrid-rerank
+    mode: hybrid
+    use_reranker: true
+    small_to_big: true
+    parent_top_k: 5
+    max_context_chars: 12000

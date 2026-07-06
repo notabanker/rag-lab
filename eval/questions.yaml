@@ -1,0 +1,156 @@
+# Golden question set for `rag eval`.
+# Schema per question:
+#   id:                 unique slug
+#   question:           the question to ask
+#   expected_sources:   file basenames; retrieval "hit" if ANY appears in the top chunks
+#                       (required unless expect_refusal: true)
+#   expected_fragments: substrings (case-insensitive, any-match) the answer should contain
+#   expect_refusal:     true if the correct behavior is "I don't know from the provided documents."
+#   tags:               free-form labels for slicing results
+questions:
+  - id: var-definition
+    question: What does a one-day 95% VaR of $1 million mean?
+    expected_sources: [risk_management.md]
+    expected_fragments: ["5%", "one day", "single day"]
+    tags: [factoid, en]
+
+  - id: monte-carlo-steps
+    question: What are the main steps of a Monte Carlo risk simulation?
+    expected_sources: [risk_management.md, risk_handbook.epub, risk_guide.pdf]
+    expected_fragments: [risk factors, scenario]
+    tags: [multi-source, en]
+
+  - id: monte-carlo-vs-var
+    question: What is the advantage of Monte Carlo simulation over VaR?
+    expected_sources: [risk_management.md]
+    expected_fragments: [tail, distribution]
+    tags: [factoid, en]
+
+  - id: basel-ratios
+    question: Which liquidity ratios did Basel III introduce?
+    expected_sources: [risk_management.md]
+    expected_fragments: [Liquidity Coverage Ratio, Net Stable Funding Ratio]
+    expected_chunk_fragments: [Liquidity Coverage Ratio]
+    tags: [factoid, en]
+
+  - id: risk-guide-model
+    question: What is the main risk model presented in chapter 2 of the Risk Management Guide?
+    expected_sources: [risk_guide.pdf]
+    expected_fragments: [Monte Carlo]
+    tags: [factoid, pdf]
+
+  - id: cap-theorem
+    question: Which three guarantees does the CAP theorem cover?
+    expected_sources: [distributed_systems.md]
+    expected_fragments: [Consistency, Availability, Partition]
+    tags: [factoid, en]
+
+  - id: raft-vs-paxos
+    question: Why was Raft designed, and how does it differ from Paxos?
+    expected_sources: [distributed_systems.md]
+    expected_fragments: [understandable, leader]
+    tags: [reasoning, en]
+
+  - id: 2pc-blocking
+    question: What is the blocking problem in Two-Phase Commit?
+    expected_sources: [distributed_systems.md]
+    expected_fragments: [coordinator, blocked]
+    tags: [factoid, en]
+
+  - id: mother-sauces
+    question: List the five French mother sauces.
+    expected_sources: [cooking.md]
+    expected_fragments: [Béchamel, Velouté, Espagnole, Hollandaise]
+    tags: [enumeration, en]
+
+  - id: food-safety-temps
+    question: To what internal temperature should poultry be cooked?
+    expected_sources: [cooking.md]
+    expected_fragments: [165]
+    tags: [factoid, en]
+
+  - id: fintech-cp
+    question: Wie viele Credit Points umfasst der Bachelor FinTech Studiengang?
+    expected_sources: [ba_fintech.pdf]
+    expected_fragments: ["180"]
+    expected_chunk_fragments: ["180 CP"]
+    tags: [factoid, de]
+
+  - id: ai-degree
+    question: Which degree does the AI in Business program award?
+    expected_sources: [ba_ai-in-business.pdf]
+    expected_fragments: [Bachelor of Science]
+    tags: [factoid, en]
+
+  - id: code-fmwft1
+    question: Worum geht es im Modul DLBFMWFT1?
+    expected_sources: [ba_fintech.pdf]
+    expected_fragments: [FinTech]
+    expected_chunk_fragments: [DLBFMWFT1]
+    tags: [code, de, hard]
+
+  - id: code-ftbv01
+    question: What is course DLBFTBV01 about?
+    expected_sources: [ba_fintech.pdf]
+    expected_fragments: [Banken, Versicherungen]
+    expected_chunk_fragments: [DLBFTBV01]
+    tags: [code, hard]
+
+  - id: paraphrase-var
+    question: If my portfolio loses more than a million dollars on one day out of twenty, which risk measure captures this?
+    expected_sources: [risk_management.md]
+    expected_fragments: [Value at Risk, VaR]
+    expected_chunk_fragments: [Value at Risk]
+    tags: [paraphrase, hard]
+
+  - id: crosslang-cp
+    question: How many ECTS credit points does the Bachelor FinTech distance-learning program comprise?
+    expected_sources: [ba_fintech.pdf]
+    expected_fragments: ["180"]
+    expected_chunk_fragments: ["180 CP"]
+    tags: [cross-language, hard]
+
+  - id: code-managerial-econ
+    question: Which module code belongs to the Managerial Economics course?
+    expected_sources: [ba_fintech.pdf]
+    expected_fragments: [DLBBWME]
+    expected_chunk_fragments: [DLBBWME]
+    tags: [hard, code]
+
+  - id: exam-types-de
+    question: What types of Prüfungsleistungen exist in the FinTech program?
+    expected_sources: [ba_fintech.pdf]
+    expected_fragments: [Klausur]
+    expected_chunk_fragments: [Klausur]
+    tags: [hard, cross-lang, de]
+
+  - id: paraphrase-poach
+    question: Which wet cooking technique is the gentlest, and what temperature range does it use?
+    expected_sources: [cooking.md]
+    expected_fragments: [poach, "160"]
+    expected_chunk_fragments: [Poaching]
+    tags: [hard, paraphrase]
+
+  - id: emir-abbrev
+    question: What does the abbreviation EMIR stand for?
+    expected_sources: [risk_management.md]
+    expected_fragments: [European Market Infrastructure Regulation]
+    expected_chunk_fragments: [EMIR]
+    tags: [hard, exact-term]
+
+  - id: accrual-detector
+    question: Which failure detection approach returns a suspicion level rather than a binary decision?
+    expected_sources: [distributed_systems.md]
+    expected_fragments: [accrual]
+    expected_chunk_fragments: [Accrual]
+    tags: [hard, paraphrase]
+
+  - id: refusal-tire
+    question: How do I change a flat tire on a car?
+    expect_refusal: true
+    tags: [refusal]
+
+  - id: refusal-capital
+    question: What is the capital of Australia?
+    expect_refusal: true
+    tags: [refusal]

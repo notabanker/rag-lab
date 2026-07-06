@@ -1,0 +1,11 @@
+retrieval:
+  hit_rate: 0.95
+  mrr: 0.90
+  chunk_hit_rate: 0.85
+  context_hit_rate: 0.95
+
+answer:
+  fragment_rate: 0.80
+  refusal_accuracy: 0.90
+  citation_validity_rate: 0.95
+  verifier_mean: 8.0
