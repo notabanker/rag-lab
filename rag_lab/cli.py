@@ -9,7 +9,7 @@ from .parsers import pick_parser
 from . import ingestion, vector_store
 from .config import (
     DEFAULT_COLLECTION, EMBEDDING_MODEL, LLM_BASE_URL, LLM_MODEL,
-    LLM_VERIFIER_MODEL, RERANKER_MODEL, get_api_key,
+    LLM_VERIFIER_MODEL, RERANKER_MODEL, default_db_path, get_api_key,
 )
 from .retriever import MODES, RetrievalConfig, retrieve
 from .web import app as web_app
@@ -29,11 +29,21 @@ console = Console()
 
 @app.callback()
 def main(
-    db_path: str = typer.Option("./chroma_db", "--db-path", help="Path to ChromaDB persist directory"),
+    db_path: str = typer.Option(None, "--db-path", help="ChromaDB persist directory (default: $RAG_DB_PATH or ~/.local/share/rag-lab/chroma_db)"),
     collection: str = typer.Option(DEFAULT_COLLECTION, "--collection", help="ChromaDB collection name"),
 ):
-    vector_store.init_store(db_path)
+    resolved = db_path or default_db_path()
+    _warn_legacy_db(resolved)
+    vector_store.init_store(resolved)
     vector_store.set_default_collection(collection)
+
+def _warn_legacy_db(resolved: str):
+    legacy = Path("./chroma_db")
+    if legacy.is_dir() and legacy.resolve() != Path(resolved).resolve():
+        console.print(
+            f"[yellow]Note:[/yellow] ./chroma_db exists but the active DB is {resolved} — "
+            f"migrate with: mv ./chroma_db {resolved}  (or pass --db-path ./chroma_db)"
+        )
 
 def _ingest_one(
     file_path: str,

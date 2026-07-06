@@ -2,9 +2,9 @@ import re
 import chromadb
 from chromadb.config import Settings
 
-from .config import CHUNKING_VERSION, DEFAULT_COLLECTION, EMBEDDING_MODEL, INDEX_VERSION
+from .config import CHUNKING_VERSION, DEFAULT_COLLECTION, EMBEDDING_MODEL, INDEX_VERSION, default_db_path
 
-_PERSIST_DIR = "./chroma_db"
+_PERSIST_DIR = default_db_path()
 _CLIENT = None
 _COLLECTIONS = {}
 _DEFAULT_NAME = DEFAULT_COLLECTION

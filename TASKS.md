@@ -16,26 +16,26 @@ Effort: **S** = under an hour, **M** = an evening, **L** = a weekend.
 *Nothing else starts until this phase is done. The whole V3 release is currently uncommitted.*
 
 ### 0.1 Commit the V3 work — **S**
-- [ ] Review `git diff` and `git status`; group changes into logical commits
+- [x] Review `git diff` and `git status`; group changes into logical commits
       (e.g. core retrieval, eval harness, dashboard, MCP server, docs)
-- [ ] Verify `.gitignore` covers `chroma_db/`, `.run/`, `dashboard/node_modules/`,
+- [x] Verify `.gitignore` covers `chroma_db/`, `.run/`, `dashboard/node_modules/`,
       `dashboard/dist/`, `__pycache__/`, `.pytest_cache/`
-- [ ] Bump `pyproject.toml` version `3.1.0.dev0` → `3.1.0`
-- [ ] Commit, tag `v3.1.0`
+- [x] Bump `pyproject.toml` version `3.1.0.dev0` → `3.1.0`
+- [x] Commit, tag `v3.1.0`
 
 ### 0.2 Make "green" checkable in one command — **S**
-- [ ] Add `scripts/check.sh`: runs `pytest` + retrieval-only eval with gates, exits non-zero on failure
-- [ ] Record the current baseline metrics in the script output or a `BASELINE.md` note
+- [x] Add `scripts/check.sh`: runs `pytest` + retrieval-only eval with gates, exits non-zero on failure
+- [x] Record the current baseline metrics in the script output or a `BASELINE.md` note
 - [ ] (Optional) git pre-push hook that runs `scripts/check.sh`
 
 ### 0.3 Kill the CWD-relative database foot-gun — **M**
 Current: `--db-path` defaults to `./chroma_db` ([cli.py:32](rag_lab/cli.py:32)); running from another directory silently creates an empty corpus.
-- [ ] Add `RAG_DB_PATH` env var to [config.py](rag_lab/config.py)
-- [ ] Default resolution order: `--db-path` flag → `RAG_DB_PATH` → `~/.local/share/rag-lab/chroma_db` (expanded, created on first use)
-- [ ] On startup, if legacy `./chroma_db` exists in CWD and differs from the resolved path: print a one-line warning with the migration command (`mv ./chroma_db ~/.local/share/rag-lab/chroma_db`)
-- [ ] Apply the same resolution in `rag serve` ([web.py](rag_lab/web.py)) and the MCP server ([mcp_server.py](rag_lab/mcp_server.py))
-- [ ] Update tests that assume `./chroma_db`; add a test for the resolution order
-- [ ] Update README + documentation.md ("CWD-dependent DB" leaves Known Limitations)
+- [x] Add `RAG_DB_PATH` env var to [config.py](rag_lab/config.py)
+- [x] Default resolution order: `--db-path` flag → `RAG_DB_PATH` → `~/.local/share/rag-lab/chroma_db` (expanded, created on first use)
+- [x] On startup, if legacy `./chroma_db` exists in CWD and differs from the resolved path: print a one-line warning with the migration command (`mv ./chroma_db ~/.local/share/rag-lab/chroma_db`)
+- [x] Apply the same resolution in `rag serve` ([web.py](rag_lab/web.py)) and the MCP server ([mcp_server.py](rag_lab/mcp_server.py))
+- [x] Update tests that assume `./chroma_db`; add a test for the resolution order
+- [x] Update README + documentation.md ("CWD-dependent DB" leaves Known Limitations)
 
 ---
 

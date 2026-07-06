@@ -95,7 +95,7 @@ uv run rag ingest <file> [OPTIONS]
 | `--overlap` | `64` | Overlap between chunks in characters |
 | `--parent-size` | `4` | Child chunks grouped into one parent context for small-to-big retrieval |
 | `--force-model-mismatch` | off | Allow ingest into a legacy or mismatched collection |
-| `--db-path` | `./chroma_db` | ChromaDB persist directory (global option) |
+| `--db-path` | `$RAG_DB_PATH` or `~/.local/share/rag-lab/chroma_db` | ChromaDB persist directory (global option) |
 
 **Examples:**
 
@@ -149,7 +149,7 @@ uv run rag query "<question>" [OPTIONS]
 | `--max-tokens` | `600` | Maximum output tokens from the LLM |
 | `--keyword` | — | Regex pattern to enable keyword retrieval mode |
 | `--trace` | — | Show full iteration trace (query, answer, score per round) |
-| `--db-path` | `./chroma_db` | ChromaDB persist directory (global option) |
+| `--db-path` | `$RAG_DB_PATH` or `~/.local/share/rag-lab/chroma_db` | ChromaDB persist directory (global option) |
 | `--collection` | versioned V3 name | ChromaDB collection name (global option) |
 
 **Examples:**
@@ -375,9 +375,7 @@ uv run rag query "some question"
 
 ## Vector Store
 
-ChromaDB in persistent mode (`PersistentClient`). Cosine distance metric. Data stored in `./chroma_db/` (configurable via `--db-path`).
-
-**Warning:** The database is CWD-relative by default. Running from different directories creates separate databases. Use `--db-path` for consistency.
+ChromaDB in persistent mode (`PersistentClient`). Cosine distance metric. Data lives in `~/.local/share/rag-lab/chroma_db` by default, so every working directory sees the same corpus. Override with `RAG_DB_PATH` or per-invocation with `--db-path`. If a legacy `./chroma_db` exists in the current directory, the CLI prints a migration hint.
 
 ---
 
@@ -397,6 +395,7 @@ Runtime settings are read from environment variables. The app does not automatic
 | `RERANKER_MODEL` | `cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` | Multilingual cross-encoder for reranking (local, no API) |
 | `RERANKER_BATCH_SIZE` | `16` | Reranker batch size |
 | `RAG_COLLECTION` | versioned V3 name | Default Chroma collection name |
+| `RAG_DB_PATH` | `~/.local/share/rag-lab/chroma_db` | ChromaDB persist directory (also holds `runs.sqlite3`); `--db-path` overrides per invocation |
 
 **Tested OpenRouter model choices:**
 
@@ -613,7 +612,6 @@ rag-lab/
 │   ├── questions.yaml      # Golden question set for `rag eval`
 │   ├── variants.yaml       # Named configs for `rag compare`
 │   └── gates.yaml          # Retrieval/answer metric gates
-├── chroma_db/              # ChromaDB persist directory + runs.sqlite3 (gitignored)
 ├── rag_lab/
 │   ├── __init__.py
 │   ├── config.py           # LLM configuration (env vars)
@@ -659,5 +657,4 @@ rag-lab/
 - **Collection safety is manual**: Collections are versioned and deletable, but the tool is still a single-user personal RAG lab, not a multi-tenant service.
 - **Re-ingest replaces by content hash**: Re-ingesting a file deletes previous chunks with the same SHA before upserting the new chunks.
 - **No streaming**: LLM responses are fully buffered. No token-by-token output.
-- **CWD-dependent DB**: Default `./chroma_db` is relative to working directory. Use `--db-path` for absolute paths.
 - **No authentication on web UI**: `rag serve` binds to 127.0.0.1 by default. Changing `--host` exposes it without auth.

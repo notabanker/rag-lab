@@ -25,10 +25,19 @@ export EMBEDDING_MODEL=intfloat/multilingual-e5-small
 export RERANKER_MODEL=cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
 ```
 
+The corpus lives in `~/.local/share/rag-lab/chroma_db` by default (override with
+`RAG_DB_PATH` or `--db-path`), so the CLI works from any directory.
+
 Check the active runtime config:
 
 ```bash
 uv run rag config show
+```
+
+Before committing, run the green check (tests + retrieval gate):
+
+```bash
+scripts/check.sh
 ```
 
 ## CLI

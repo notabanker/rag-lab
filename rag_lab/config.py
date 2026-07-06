@@ -28,6 +28,13 @@ def collection_fingerprint(
 
 DEFAULT_COLLECTION = os.environ.get("RAG_COLLECTION", "").strip() or f"rag_lab_{collection_fingerprint()}"
 
+def default_db_path() -> str:
+    """Resolution order: --db-path flag (handled by callers) > RAG_DB_PATH > user data dir."""
+    env = os.environ.get("RAG_DB_PATH", "").strip()
+    if env:
+        return os.path.expanduser(env)
+    return os.path.join(os.path.expanduser("~"), ".local", "share", "rag-lab", "chroma_db")
+
 def get_api_key() -> str:
     return OPENROUTER_API_KEY or DEEPSEEK_API_KEY
 
