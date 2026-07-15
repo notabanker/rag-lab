@@ -66,3 +66,43 @@ def test_select_context_chunks_expands_parent(tmp_path):
     assert "first child" in out[0]["text"]
     assert "second child" in out[0]["text"]
     assert out[0]["metadata"]["child_ids"] == "c0,c1"
+
+
+def test_verify_receives_original_question_not_refined(monkeypatch):
+    """Regression: verify() must receive the ORIGINAL question, not the
+    refined (noisy) question that accumulates meta-instructions like
+    'Previous attempt was weak because: ...'.
+
+    Bug: _retrieve passed current_q (which _refine_query appends noise to)
+    to verify() instead of the original question parameter.
+    """
+    from rag_lab.retriever import _retrieve, RetrievalConfig
+
+    fake_hit = {
+        "id": "test-0",
+        "text": "Some content about LCR and Basel III.",
+        "metadata": {"source": "test.md", "citation": "test.md chunk 1"},
+        "distance": 0.1,
+    }
+    monkeypatch.setattr("rag_lab.retriever.retrieve_hits", lambda q, cfg: [fake_hit])
+    monkeypatch.setattr(
+        "rag_lab.retriever._generate",
+        lambda prompt, model=None, max_tokens=600: ("fake answer", {"prompt_tokens": 10, "completion_tokens": 5}),
+    )
+
+    captured = []
+    def fake_verify(question, answer, chunks, model=None):
+        captured.append(question)
+        return {"score": 0, "grounded": False, "issues": ["fake low score"], "verdict": "UNGROUNDED", "_usage": {}}
+    monkeypatch.setattr("rag_lab.retriever.verify", fake_verify)
+
+    original_question = "What is LCR?"
+    cfg = RetrievalConfig(max_iters=3, min_score=999)  # Forces all 3 iterations
+    result = _retrieve(original_question, cfg)
+
+    assert len(captured) == 3, f"Expected 3 verify calls, got {len(captured)}"
+    for i, q in enumerate(captured):
+        assert q == original_question, (
+            f"Iter {i}: verify received {q!r}, expected {original_question!r}\n"
+            "Bug: refined question with noise was passed to verify() instead of original"
+        )

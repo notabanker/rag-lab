@@ -243,7 +243,7 @@ def _retrieve(question: str, cfg: RetrievalConfig) -> dict:
             _add_usage(usage, u)
         except RuntimeError as e:
             return {"answer": f"LLM error: {e}", "chunks": chunks, "verifier": verdict, "iterations": 1, "trace": trace, "usage": usage}
-        verdict = verify(current_q, answer, chunks, model=cfg.model)
+        verdict = verify(question, answer, chunks, model=cfg.model)
         _add_usage(usage, verdict.pop("_usage", None))
         return _result_with_citations({
             "answer": answer, "chunks": chunks, "verifier": verdict,
@@ -276,7 +276,7 @@ def _retrieve(question: str, cfg: RetrievalConfig) -> dict:
                 "chunks": chunks, "verifier": verdict,
                 "iterations": i + 1, "trace": trace, "partial": True, "usage": usage,
             }
-        verdict = verify(current_q, answer, chunks, model=cfg.model)
+        verdict = verify(question, answer, chunks, model=cfg.model)
         _add_usage(usage, verdict.pop("_usage", None))
         score = verdict.get("score", 0)
         try:
