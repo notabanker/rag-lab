@@ -1,15 +1,37 @@
 import os
 import re
 
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://openrouter.ai/api/v1").strip()
-LLM_MODEL = os.environ.get("LLM_MODEL", "qwen/qwen3.7-plus").strip()
-LLM_VERIFIER_MODEL = os.environ.get("LLM_VERIFIER_MODEL", "").strip() or LLM_MODEL
-EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "").strip() or "intfloat/multilingual-e5-small"
-EMBEDDING_BATCH_SIZE = int(os.environ.get("EMBEDDING_BATCH_SIZE", "32"))
-RERANKER_MODEL = os.environ.get("RERANKER_MODEL", "").strip() or "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
-RERANKER_BATCH_SIZE = int(os.environ.get("RERANKER_BATCH_SIZE", "16"))
+def _env_str(name: str, default: str = "") -> str:
+    return os.environ.get(name, default).strip()
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be an integer, got {raw!r}") from None
+
+# Read at import: these pin the identity of the index (collection fingerprint,
+# embedding model). They must be stable for the lifetime of the process.
+LLM_BASE_URL = _env_str("LLM_BASE_URL", "https://openrouter.ai/api/v1")
+LLM_MODEL = _env_str("LLM_MODEL", "qwen/qwen3.7-plus")
+LLM_VERIFIER_MODEL = _env_str("LLM_VERIFIER_MODEL", "") or LLM_MODEL
+EMBEDDING_MODEL = _env_str("EMBEDDING_MODEL", "") or "intfloat/multilingual-e5-small"
+RERANKER_MODEL = _env_str("RERANKER_MODEL", "") or "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+EMBEDDING_BATCH_SIZE = _env_int("EMBEDDING_BATCH_SIZE", 32)
+RERANKER_BATCH_SIZE = _env_int("RERANKER_BATCH_SIZE", 16)
+
+# LLM call behavior (mutable per process; defaults sane for OpenRouter).
+LLM_TIMEOUT = _env_int("LLM_TIMEOUT", 180)            # seconds, generator
+LLM_VERIFIER_TIMEOUT = _env_int("LLM_VERIFIER_TIMEOUT", 120)
+LLM_MAX_RETRIES = _env_int("LLM_MAX_RETRIES", 2)      # on 429/5xx/network errors
+
+# Upload guard for the web API.
+MAX_UPLOAD_BYTES = _env_int("RAG_MAX_UPLOAD_MB", 200) * 1024 * 1024
+MAX_INGEST_CHUNKS = 100_000
+
 INDEX_VERSION = "v3"
 CHUNKING_VERSION = "sentence-v2-parent"
 
@@ -26,20 +48,35 @@ def collection_fingerprint(
     chunking = chunking_version or CHUNKING_VERSION
     return f"{INDEX_VERSION}-{_slug(model)}-{_slug(chunking)}"
 
-DEFAULT_COLLECTION = os.environ.get("RAG_COLLECTION", "").strip() or f"rag_lab_{collection_fingerprint()}"
+DEFAULT_COLLECTION = _env_str("RAG_COLLECTION", "") or f"rag_lab_{collection_fingerprint()}"
 
 def default_db_path() -> str:
     """Resolution order: --db-path flag (handled by callers) > RAG_DB_PATH > user data dir."""
-    env = os.environ.get("RAG_DB_PATH", "").strip()
+    env = _env_str("RAG_DB_PATH")
     if env:
         return os.path.expanduser(env)
     return os.path.join(os.path.expanduser("~"), ".local", "share", "rag-lab", "chroma_db")
 
+def eval_dir() -> str:
+    """Root directory for golden-question files accepted by API/MCP eval runs."""
+    env = _env_str("RAG_EVAL_DIR")
+    if env:
+        return os.path.expanduser(env)
+    return os.path.join(os.getcwd(), "eval")
+
 def get_api_key() -> str:
-    return OPENROUTER_API_KEY or DEEPSEEK_API_KEY
+    # Read live so later env changes and tests take effect.
+    return _env_str("OPENROUTER_API_KEY") or _env_str("DEEPSEEK_API_KEY")
 
 def require_api_key() -> str:
     key = get_api_key()
     if not key:
         raise RuntimeError("No API key set — export OPENROUTER_API_KEY or DEEPSEEK_API_KEY")
     return key
+
+def get_api_token() -> str:
+    """Bearer token for the web API when bound beyond loopback. Empty = localhost mode."""
+    return _env_str("RAG_API_TOKEN")
+
+def is_loopback_host(host: str) -> bool:
+    return host in {"127.0.0.1", "localhost", "::1", "0.0.0.0"} or host.startswith("127.")

@@ -111,7 +111,7 @@ uv run rag ingest ~/Documents/handbook.pdf --strategy fixed --size 256 --overlap
 uv run rag --db-path ~/my_chroma_db ingest report.md
 ```
 
-**Supported formats:** `.pdf`, `.epub`, `.md`, `.markdown`
+**Supported formats:** `.pdf`, `.epub`, `.md`, `.markdown`, `.docx`
 
 **What happens:**
 1. Parser extracts raw text from the file and reports per-section (page/chapter) character counts
@@ -399,6 +399,12 @@ Runtime settings are read from environment variables. The app does not automatic
 | `RERANKER_BATCH_SIZE` | `16` | Reranker batch size |
 | `RAG_COLLECTION` | versioned V3 name | Default Chroma collection name |
 | `RAG_DB_PATH` | `~/.local/share/rag-lab/chroma_db` | ChromaDB persist directory (also holds `runs.sqlite3`); `--db-path` overrides per invocation |
+| `RAG_API_TOKEN` | — | Bearer token required for all `/api` routes; `rag serve` refuses to bind a non-loopback host without it (fail-closed) |
+| `RAG_MAX_UPLOAD_MB` | `200` | Per-ingest upload cap for `POST /api/ingest` (413 above it) |
+| `RAG_EVAL_DIR` | `./eval` | Allowlist root for eval question files; paths outside it are rejected |
+| `LLM_TIMEOUT` | `180` | Request timeout (s) for the answer generator |
+| `LLM_VERIFIER_TIMEOUT` | `120` | Request timeout (s) for the verifier |
+| `LLM_MAX_RETRIES` | `2` | Retries on 429/5xx/network errors, with exponential backoff |
 
 **Tested OpenRouter model choices:**
 

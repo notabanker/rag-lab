@@ -65,12 +65,12 @@ Current: `--db-path` defaults to `./chroma_db` ([cli.py:32](rag_lab/cli.py:32));
 - [ ] documentation.md: "No OCR" leaves Known Limitations
 
 ### A.3 DOCX parser — **M**
-- [ ] Add `python-docx` dependency
-- [ ] New [parsers/docx.py](rag_lab/parsers): paragraphs + headings (keep heading text inline for chunk context), tables flattened row-per-line
-- [ ] Register `.docx` in `PARSERS` ([parsers/__init__.py](rag_lab/parsers/__init__.py))
-- [ ] Citation labels: no page numbers in DOCX — use heading-based section labels (`report.docx §2.3 Methods`) or paragraph ranges; keep [citations.py](rag_lab/citations.py) validation working
-- [ ] Tests + small `.docx` fixture (headings, table, plain paragraphs)
-- [ ] Update supported-formats list in docs, dashboard upload accept-list, MCP `rag_ingest` description
+- [x] Add `python-docx` dependency
+- [x] New [parsers/docx.py](rag_lab/parsers): paragraphs + headings (keep heading text inline for chunk context), tables flattened row-per-line
+- [x] Register `.docx` in `PARSERS` ([parsers/__init__.py](rag_lab/parsers/__init__.py))
+- [x] Citation labels: no page numbers in DOCX — use heading-based section labels (`report.docx §2.3 Methods`) or paragraph ranges; keep [citations.py](rag_lab/citations.py) validation working
+- [x] Tests + small `.docx` fixture (headings, table, plain paragraphs)
+- [x] Update supported-formats list in docs (dashboard/MCP derive their format list from `PARSERS`, so no separate accept-list edits needed)
 
 ### A.4 PPTX parser — **M**
 - [ ] Add `python-pptx` dependency

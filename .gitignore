@@ -9,3 +9,5 @@ uv.lock
 *.egg-info/
 dist/
 node_modules/
+.DS_Store
+.ruff_cache/

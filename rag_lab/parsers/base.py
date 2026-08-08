@@ -11,7 +11,7 @@ LOW_YIELD_PAGE_CHARS = 50
 @dataclass
 class ParseResult:
     text: str
-    section_unit: str = "document"  # "page" | "chapter" | "document"
+    section_unit: str = "document"  # "page" | "chapter" | "section" | "slide" | "document"
     section_chars: list[int] = field(default_factory=list)
 
     @property

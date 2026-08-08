@@ -20,7 +20,9 @@ def load_gates(path: str) -> dict:
         if not isinstance(metrics, dict):
             raise ValueError(f"{path}: section '{section}' must be a mapping")
         for metric, threshold in metrics.items():
-            if not isinstance(threshold, (int, float)):
+            # bool is an int subclass; a boolean threshold like `true` would
+            # silently gate on 1/0 instead of a real metric value.
+            if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
                 raise ValueError(f"{path}: threshold for '{section}.{metric}' must be numeric")
     return data
 

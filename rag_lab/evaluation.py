@@ -1,11 +1,30 @@
 """Eval harness: golden questions, retrieval/answer metrics, variant comparison."""
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
+import os
 import time
 
 import yaml
 
+from .config import eval_dir
+
 REFUSAL_MARKER = "don't know from the provided documents"
+
+MAX_EVAL_QUESTIONS = 100
+
+
+def secure_questions_path(path: str) -> str:
+    """Resolve a questions-file path and require it to live under the eval-dir
+    allowlist (RAG_EVAL_DIR or cwd/eval). API/MCP callers must route through
+    this so a caller cannot read arbitrary files by path."""
+    p = Path(path)
+    if not p.is_absolute():
+        p = Path(os.getcwd()) / p
+    resolved = p.resolve()
+    root = Path(eval_dir()).resolve()
+    if not (resolved == root or root in resolved.parents):
+        raise ValueError(f"questions file must live under {root}: {path}")
+    return str(resolved)
 
 # ---------- Golden question set ----------
 
@@ -168,42 +187,47 @@ def evaluate(
     per_question = []
     for q in questions:
         entry = {"id": q.id, "question": q.question, "tags": q.tags, "expect_refusal": q.expect_refusal}
-        if not q.expect_refusal:
-            start = time.perf_counter()
-            hits = retrieve_hits(q.question, cfg)
-            context = select_context_chunks(hits, cfg)
-            entry["retrieval_latency_ms"] = int((time.perf_counter() - start) * 1000)
-            entry["context_chars"] = sum(len(c.get("text") or "") for c in context)
-            entry["context_count"] = len(context)
-            entry.update(retrieval_metrics(
-                hits, q.expected_sources, k=cfg.rerank_top,
-                chunk_fragments=q.expected_chunk_fragments,
-            ))
-            entry.update(_prefix_metrics(retrieval_metrics(
-                context, q.expected_sources, k=len(context) or 1,
-                chunk_fragments=q.expected_chunk_fragments,
-            ), "context"))
-        if not retrieval_only:
-            result = retrieve(q.question, cfg, log=False)
-            answer = result.get("answer", "")
-            citation_validation = result.get("citation_validation") or {}
-            entry["answer"] = answer
-            entry["verifier_score"] = (result.get("verifier") or {}).get("score")
-            entry["iterations"] = result.get("iterations")
-            entry["latency_ms"] = result.get("latency_ms")
-            entry["usage"] = result.get("usage", {})
-            entry["citation_validation"] = citation_validation
-            entry["citation_valid"] = citation_validation.get("citation_valid")
-            entry["citation_count"] = citation_validation.get("citation_count")
-            entry["citation_errors"] = citation_validation.get("citation_errors", [])
-            refused = is_refusal(answer)
-            if q.expect_refusal:
-                entry["refusal_correct"] = refused
-            else:
-                entry["refused"] = refused
-                fm = fragment_match(answer, q.expected_fragments)
-                if fm is not None:
-                    entry["fragment_matched"] = fm
+        # A failing question is tagged, never dropped: LLM/network hiccups must
+        # not silently poison the aggregate metrics.
+        try:
+            if not q.expect_refusal:
+                start = time.perf_counter()
+                hits = retrieve_hits(q.question, cfg)
+                context = select_context_chunks(hits, cfg)
+                entry["retrieval_latency_ms"] = int((time.perf_counter() - start) * 1000)
+                entry["context_chars"] = sum(len(c.get("text") or "") for c in context)
+                entry["context_count"] = len(context)
+                entry.update(retrieval_metrics(
+                    hits, q.expected_sources, k=cfg.rerank_top,
+                    chunk_fragments=q.expected_chunk_fragments,
+                ))
+                entry.update(_prefix_metrics(retrieval_metrics(
+                    context, q.expected_sources, k=len(context) or 1,
+                    chunk_fragments=q.expected_chunk_fragments,
+                ), "context"))
+            if not retrieval_only:
+                result = retrieve(q.question, cfg, log=False)
+                answer = result.get("answer", "")
+                citation_validation = result.get("citation_validation") or {}
+                entry["answer"] = answer
+                entry["verifier_score"] = (result.get("verifier") or {}).get("score")
+                entry["iterations"] = result.get("iterations")
+                entry["latency_ms"] = result.get("latency_ms")
+                entry["usage"] = result.get("usage", {})
+                entry["citation_validation"] = citation_validation
+                entry["citation_valid"] = citation_validation.get("citation_valid")
+                entry["citation_count"] = citation_validation.get("citation_count")
+                entry["citation_errors"] = citation_validation.get("citation_errors", [])
+                refused = is_refusal(answer)
+                if q.expect_refusal:
+                    entry["refusal_correct"] = refused
+                else:
+                    entry["refused"] = refused
+                    fm = fragment_match(answer, q.expected_fragments)
+                    if fm is not None:
+                        entry["fragment_matched"] = fm
+        except Exception as e:
+            entry["error"] = str(e)
         per_question.append(entry)
 
     return {
@@ -226,11 +250,16 @@ def _as_number(v) -> float | None:
         return None
 
 def summarize(per_question: list[dict], include_tags: bool = True) -> dict:
+    # Exclude error-tagged entries from every metric (they are not misses);
+    # report the failure count separately so a broken run is visible.
+    errored = [e for e in per_question if "error" in e]
+    per_question = [e for e in per_question if "error" not in e]
     answered = [e for e in per_question if not e["expect_refusal"]]
     refusals = [e for e in per_question if e["expect_refusal"]]
     hits = [e["hit_at_k"] for e in answered if "hit_at_k" in e]
     summary = {
         "questions": len(per_question),
+        "errors": len(errored),
         "hit_rate": _mean([1.0 if h else 0.0 for h in hits]),
         "hit_at_1": _mean([1.0 if e["hit_at_1"] else 0.0 for e in answered if "hit_at_1" in e]),
         "hit_at_3": _mean([1.0 if e["hit_at_3"] else 0.0 for e in answered if "hit_at_3" in e]),

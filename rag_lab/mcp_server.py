@@ -20,6 +20,12 @@ def _cfg(
     parent_top_k: int = 5,
     max_context_chars: int = 12000,
 ) -> RetrievalConfig:
+    # Caps: an MCP client must not be able to balloon a query into a
+    # multi-thousand-chunk, unbounded-cost run.
+    top_k = min(max(top_k, 1), 200)
+    rerank_top = min(max(rerank_top, 1), 50)
+    parent_top_k = min(max(parent_top_k, 1), 50)
+    max_context_chars = min(max(max_context_chars, 1), 100000)
     return RetrievalConfig(
         mode=mode,
         top_k=top_k,
@@ -173,7 +179,9 @@ def rag_eval_run(
     small_to_big: bool = True,
 ) -> dict:
     from . import runs
-    questions = evaluation.load_questions(questions_file)
+    questions = evaluation.load_questions(evaluation.secure_questions_path(questions_file))
+    if len(questions) > evaluation.MAX_EVAL_QUESTIONS:
+        return {"status": "error", "message": f"too many questions ({len(questions)} > {evaluation.MAX_EVAL_QUESTIONS})"}
     cfg = _cfg(mode=mode, use_reranker=use_reranker, small_to_big=small_to_big)
     report = evaluation.evaluate(questions, cfg, retrieval_only=retrieval_only)
     report["config"]["collection"] = vector_store.default_collection_name()

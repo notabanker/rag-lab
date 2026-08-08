@@ -43,13 +43,16 @@ CREATE TABLE IF NOT EXISTS eval_runs (
 """
 
 def _db_path() -> Path:
-    d = Path(vector_store._PERSIST_DIR)
+    d = Path(vector_store.persist_dir())
     d.mkdir(parents=True, exist_ok=True)
     return d / "runs.sqlite3"
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(_db_path())
+    # WAL + busy_timeout: the web API and CLI touch this DB concurrently
+    # (run logging, health checks, manifest writes).
+    conn = sqlite3.connect(_db_path(), timeout=10)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
     _migrate(conn)
     return conn
@@ -133,6 +136,18 @@ def get_run(run_id: int) -> dict | None:
 def log_eval(variant: str, config: dict, summary: dict, per_question: list) -> int:
     conn = _connect()
     try:
+        # Dedup: re-running the same variant+config+summary shouldn't spam the
+        # history with byte-identical rows. per_question is deliberately left
+        # out of the key — same summary means same outcome.
+        # ponytail: summary equality as the identity, per-question diff if
+        # identical-summary-but-different-questions ever matters.
+        existing = conn.execute(
+            "SELECT id FROM eval_runs WHERE variant = ? AND config = ? AND summary = ?"
+            " ORDER BY id DESC LIMIT 1",
+            (variant, json.dumps(config, sort_keys=True), json.dumps(summary, sort_keys=True)),
+        ).fetchone()
+        if existing:
+            return existing["id"]
         cur = conn.execute(
             "INSERT INTO eval_runs (timestamp, variant, config, summary, per_question) VALUES (?,?,?,?,?)",
             (_now(), variant, json.dumps(config), json.dumps(summary), json.dumps(per_question)),

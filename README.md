@@ -1,6 +1,6 @@
 # rag-lab
 
-Personal RAG lab for local corpora: PDF + EPUB + Markdown -> versioned Chroma collections -> multilingual hybrid retrieval (E5 vectors + BM25 + cross-encoder rerank + small-to-big context) -> cited answers with verifier and eval gates.
+Personal RAG lab for local corpora: PDF + EPUB + Markdown + DOCX -> versioned Chroma collections -> multilingual hybrid retrieval (E5 vectors + BM25 + cross-encoder rerank + small-to-big context) -> cited answers with verifier and eval gates.
 
 ## Setup
 
@@ -27,6 +27,15 @@ export RERANKER_MODEL=cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
 
 The corpus lives in `~/.local/share/rag-lab/chroma_db` by default (override with
 `RAG_DB_PATH` or `--db-path`), so the CLI works from any directory.
+
+The web API refuses to bind a non-loopback host without a token (fail-closed),
+and uploads are capped by default:
+
+```bash
+export RAG_API_TOKEN=change-me     # required for non-loopback hosts
+export RAG_MAX_UPLOAD_MB=200       # per-ingest upload cap
+export RAG_EVAL_DIR=./eval         # allowlist root for eval question files
+```
 
 Check the active runtime config:
 

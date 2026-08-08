@@ -1,5 +1,4 @@
 import json
-import re
 from pathlib import Path
 import typer
 from rich.console import Console
@@ -10,8 +9,9 @@ from . import ingestion, vector_store
 from .config import (
     DEFAULT_COLLECTION, EMBEDDING_MODEL, LLM_BASE_URL, LLM_MODEL,
     LLM_VERIFIER_MODEL, RERANKER_MODEL, default_db_path, get_api_key,
+    get_api_token, is_loopback_host,
 )
-from .retriever import MODES, RetrievalConfig, retrieve
+from .retriever import RetrievalConfig, retrieve
 from .web import app as web_app
 
 app = typer.Typer(help="rag-lab CLI — standalone RAG learning project")
@@ -132,17 +132,11 @@ def query(
     parent_top_k: int = typer.Option(5, "--parent-top-k", help="Parent contexts passed to LLM"),
     max_context_chars: int = typer.Option(12000, "--max-context-chars", help="Context character budget"),
     min_score: int = typer.Option(8, "--min-score"),
-    keyword: str = typer.Option(None, "--keyword", help="Regex pattern for keyword retrieval (bypasses vector search)"),
+    keyword: str = typer.Option(None, "--keyword", help="Literal substring for keyword retrieval (bypasses vector search)"),
     max_tokens: int = typer.Option(600, "--max-tokens", help="Max output tokens"),
     show_trace: bool = typer.Option(False, "--trace"),
 ):
     """Run the /goal retrieval loop on a question."""
-    if keyword:
-        try:
-            re.compile(keyword)
-        except re.error as e:
-            typer.echo(f"❌ Invalid --keyword regex: {e}")
-            raise typer.Exit(1)
     try:
         cfg = RetrievalConfig(
             mode=mode, top_k=top_k, rerank_top=rerank, use_reranker=not no_rerank,
@@ -168,7 +162,7 @@ def query(
     if v.get("issues"):
         console.print(f"  [yellow]issues[/yellow]: {v.get('issues')}")
     if result.get("partial"):
-        console.print(f"  [red]⚠ partial — max iters reached[/red]")
+        console.print("  [red]⚠ partial — max iters reached[/red]")
     if result.get("run_id"):
         console.print(f"[dim]Logged as run #{result['run_id']} — see `rag runs show {result['run_id']}`[/dim]")
     if result.get("log_error"):
@@ -187,7 +181,7 @@ def stats():
     t.add_row("Collection", vector_store.default_collection_name())
     t.add_row("Chunk count", str(n))
     t.add_row("Documents", str(vector_store.distinct_sources()))
-    t.add_row("DB path", vector_store._PERSIST_DIR)
+    t.add_row("DB path", vector_store.persist_dir())
     t.add_row("Configured embedder", EMBEDDING_MODEL)
     t.add_row("Collection embedder", str(meta.get("embedding_model") or "unknown"))
     t.add_row("Reranker", RERANKER_MODEL)
@@ -208,7 +202,7 @@ def config_show():
     t.add_row("Reranker model", RERANKER_MODEL)
     t.add_row("Default collection", DEFAULT_COLLECTION)
     t.add_row("Active collection", vector_store.default_collection_name())
-    t.add_row("DB path", vector_store._PERSIST_DIR)
+    t.add_row("DB path", vector_store.persist_dir())
     console.print(t)
 
 @mcp_app.command("serve")
@@ -566,6 +560,11 @@ def serve(
     port: int = typer.Option(8000, "--port"),
 ):
     """Start the web test console."""
+    if not is_loopback_host(host) and not get_api_token():
+        # Fail-closed: exposing the API beyond loopback without a token would
+        # serve unauthenticated ingest/delete endpoints to the network.
+        typer.echo(f"❌ Refusing to serve on {host} without RAG_API_TOKEN. Set it and retry.")
+        raise typer.Exit(1)
     import uvicorn
     console.print(f"[green]Starting rag-lab test console at http://{host}:{port}[/green]")
     uvicorn.run(web_app, host=host, port=port, log_level="warning")

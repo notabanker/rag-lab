@@ -4,7 +4,7 @@ from chromadb.config import Settings
 
 from .config import CHUNKING_VERSION, DEFAULT_COLLECTION, EMBEDDING_MODEL, INDEX_VERSION, default_db_path
 
-_PERSIST_DIR = default_db_path()
+_PERSIST_DIR = None  # resolved lazily so RAG_DB_PATH / tests take effect
 _CLIENT = None
 _COLLECTIONS = {}
 _DEFAULT_NAME = DEFAULT_COLLECTION
@@ -14,6 +14,12 @@ def init_store(persist_dir: str):
     _PERSIST_DIR = persist_dir
     _CLIENT = None
     _COLLECTIONS = {}
+
+def persist_dir() -> str:
+    global _PERSIST_DIR
+    if _PERSIST_DIR is None:
+        _PERSIST_DIR = default_db_path()
+    return _PERSIST_DIR
 
 def set_default_collection(name: str):
     global _DEFAULT_NAME
@@ -25,7 +31,7 @@ def default_collection_name() -> str:
 def _client():
     global _CLIENT
     if _CLIENT is None:
-        _CLIENT = chromadb.PersistentClient(path=_PERSIST_DIR, settings=Settings(anonymized_telemetry=False))
+        _CLIENT = chromadb.PersistentClient(path=persist_dir(), settings=Settings(anonymized_telemetry=False))
     return _CLIENT
 
 def get_collection(name: str = None):
@@ -136,7 +142,9 @@ def keyword_search(pattern: str, limit: int = 200) -> list[dict]:
     total = coll.count()
     hits = []
     seen = set()
-    compiled = re.compile(pattern, re.IGNORECASE)
+    # Literal substring match: a user-supplied "pattern" must never become a
+    # regex (catastrophic backtracking on a large corpus is a ReDoS).
+    compiled = re.compile(re.escape(pattern), re.IGNORECASE)
     offset = 0
     batch = 500
     while offset < total and len(hits) < limit:
@@ -162,6 +170,16 @@ def delete_by_sha(file_sha: str):
     coll = get_collection()
     coll.delete(where={"file_sha": file_sha})
     _invalidate_lexical()
+
+def delete_stale_chunks(file_sha: str, keep_ids: set[str]):
+    """Remove chunks of this file NOT in keep_ids. Called AFTER upsert so a
+    failure mid-ingest never destroys the previous good version (atomic swap)."""
+    coll = get_collection()
+    existing = coll.get(where={"file_sha": file_sha}, include=["metadatas"])["ids"]
+    stale = [i for i in existing if i not in keep_ids]
+    if stale:
+        coll.delete(ids=stale)
+        _invalidate_lexical()
 
 def delete_document(identifier: str) -> int:
     """Delete by file_sha/doc_id, exact source, or source basename. Returns removed chunk count."""

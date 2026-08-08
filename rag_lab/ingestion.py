@@ -6,10 +6,15 @@ import re
 from . import chunker, embedder, manifest, vector_store
 from .config import CHUNKING_VERSION, EMBEDDING_MODEL, INDEX_VERSION
 
-_MARKER_RE = re.compile(r"---\s*(Page\s+\d+|[^-][^-]+?)\s*---", re.IGNORECASE)
+# Label branch: starts with a non-hyphen, may contain single hyphens
+# ("State-of-the-art") but never crosses a "---" or a newline.
+_MARKER_RE = re.compile(r"---\s*(Page\s+\d+|[^-\n](?:(?!---)[^\n])*?)\s*---", re.IGNORECASE)
 
 def content_sha(content: bytes) -> str:
-    return hashlib.sha256(content).hexdigest()[:10]
+    # Full digest: 40-bit truncation made collisions material (~1M docs) and a
+    # collision silently replaced an unrelated document. Note: chunk ids change,
+    # so an existing index must be re-baselined (rag rebuild).
+    return hashlib.sha256(content).hexdigest()
 
 def make_chunks(text: str, strategy: str, chunk_size: int, overlap: int) -> list[chunker.Chunk]:
     if strategy == "fixed":
@@ -99,7 +104,9 @@ def ingest_text(
     ids = [f"{file_sha}-{i}" for i in range(len(chunks))]
     vector_store.ensure_collection_compatible(force=force_model_mismatch)
     vecs = embedder.embed([c.text for c in chunks], input_type="document")
-    vector_store.delete_by_sha(file_sha)
+    # Atomic swap: upsert the new chunks first, then drop only stale ones with
+    # this sha. A failure between the two leaves the previous version intact —
+    # the old delete-before-write destroyed it silently on any mid-ingest error.
     vector_store.upsert(
         chunks,
         vecs,
@@ -109,5 +116,6 @@ def ingest_text(
         chunking_version=CHUNKING_VERSION,
         force_model_mismatch=force_model_mismatch,
     )
+    vector_store.delete_stale_chunks(file_sha, set(ids))
     manifest.log_document(source, file_sha, len(chunks), parse_report=parse_quality)
     return {"chunks": len(chunks), "file_sha": file_sha, "warnings": warnings}

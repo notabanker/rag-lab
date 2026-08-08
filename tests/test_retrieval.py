@@ -91,18 +91,23 @@ def test_verify_receives_original_question_not_refined(monkeypatch):
     )
 
     captured = []
-    def fake_verify(question, answer, chunks, model=None):
+    def fake_verify(question, answer, chunks, model=None, chunk_cap=12000):
         captured.append(question)
         return {"score": 0, "grounded": False, "issues": ["fake low score"], "verdict": "UNGROUNDED", "_usage": {}}
     monkeypatch.setattr("rag_lab.retriever.verify", fake_verify)
 
     original_question = "What is LCR?"
-    cfg = RetrievalConfig(max_iters=3, min_score=999)  # Forces all 3 iterations
+    cfg = RetrievalConfig(max_iters=3, min_score=999)
     result = _retrieve(original_question, cfg)
 
-    assert len(captured) == 3, f"Expected 3 verify calls, got {len(captured)}"
-    for i, q in enumerate(captured):
-        assert q == original_question, (
-            f"Iter {i}: verify received {q!r}, expected {original_question!r}\n"
-            "Bug: refined question with noise was passed to verify() instead of original"
-        )
+    # The UNGROUNDED gate stops the loop after the first audit — the refined
+    # question never gets built, so exactly one verify call must happen.
+    assert len(captured) == 1, f"Expected 1 verify call, got {len(captured)}"
+    assert captured[0] == original_question, (
+        f"verify received {captured[0]!r}, expected {original_question!r}\n"
+        "Bug: refined question with noise was passed to verify() instead of original"
+    )
+    # Fact-Forcing gate: a final ungrounded answer must be withheld.
+    assert result["answer"] == "I don't know from the provided documents."
+    assert result.get("partial") is True
+    assert result["trace"][-1].get("withheld") is True

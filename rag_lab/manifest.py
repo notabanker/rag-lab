@@ -24,14 +24,17 @@ CREATE TABLE IF NOT EXISTS documents (
 
 
 def _db_path() -> Path:
-    d = Path(vector_store._PERSIST_DIR)
+    d = Path(vector_store.persist_dir())
     d.mkdir(parents=True, exist_ok=True)
     return d / "runs.sqlite3"
 
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(_db_path())
+    # WAL + busy_timeout: shares runs.sqlite3 with runs.py; concurrent writers
+    # (web API + CLI) must not hit "database is locked".
+    conn = sqlite3.connect(_db_path(), timeout=10)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(documents)")}
     if "parse_report" not in cols:
