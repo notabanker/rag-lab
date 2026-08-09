@@ -79,4 +79,6 @@ def get_api_token() -> str:
     return _env_str("RAG_API_TOKEN")
 
 def is_loopback_host(host: str) -> bool:
-    return host in {"127.0.0.1", "localhost", "::1", "0.0.0.0"} or host.startswith("127.")
+    # 0.0.0.0 binds ALL interfaces — serving on it without a token is not
+    # loopback-only, so the serve guard treats it as remote (token required).
+    return host in {"127.0.0.1", "localhost", "::1"} or host.startswith("127.")
