@@ -1,5 +1,4 @@
 import importlib
-from pathlib import Path
 
 from rag_lab import config, vector_store
 from rag_lab.parsers import ocr
@@ -34,8 +33,8 @@ def _boom(name, **kw):
 
 
 class _FakeNamedTemp:
-    def __init__(self, *a, **kw):
-        self.name = "/tmp/fake-ocr.png"
+    def __init__(self, name, *a, **kw):
+        self.name = name
 
     def write(self, data):
         pass
@@ -45,10 +44,6 @@ class _FakeNamedTemp:
 
     def __exit__(self, *a):
         return False
-
-
-class _FakeTemp:
-    NamedTemporaryFile = staticmethod(lambda *a, **kw: _FakeNamedTemp(*a, **kw))
 
 
 def test_ocr_page_renders_and_ocrs(tmp_path, monkeypatch):
@@ -75,6 +70,11 @@ def test_ocr_page_renders_and_ocrs(tmp_path, monkeypatch):
         def close(self):
             calls["closed"] = True
 
+    class FakeTemp:
+        NamedTemporaryFile = staticmethod(
+            lambda *a, **kw: _FakeNamedTemp(str(tmp_path / "fake-ocr.png"), *a, **kw)
+        )
+
     fake_fitz = type("fitz", (), {"open": FakeDoc})
     fake_tess = type("tess", (), {
         "image_to_string": lambda path, lang: calls.__setitem__("lang", lang) or "OCR TEXT",
@@ -82,7 +82,7 @@ def test_ocr_page_renders_and_ocrs(tmp_path, monkeypatch):
     })
     monkeypatch.setattr("rag_lab.parsers.ocr.fitz", fake_fitz)
     monkeypatch.setattr("rag_lab.parsers.ocr.pytesseract", fake_tess)
-    monkeypatch.setattr("rag_lab.parsers.ocr.tempfile", _FakeTemp)
+    monkeypatch.setattr("rag_lab.parsers.ocr.tempfile", FakeTemp)
     out = ocr.ocr_page("/tmp/x.pdf", 2, "deu+eng")
     assert out == "OCR TEXT"
     assert calls["page"] == 2
@@ -114,3 +114,5 @@ def test_ocr_pages_cache_hit_and_miss(tmp_path, monkeypatch):
     assert seen == [2]
     # Cache-Datei existiert neben dem persist_dir
     assert (tmp_path / "db" / "ocr_cache.json").exists()
+    # Reset the module-global persist dir so other tests are unaffected.
+    vector_store.init_store(None)

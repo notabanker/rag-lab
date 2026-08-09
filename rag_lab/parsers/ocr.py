@@ -77,7 +77,7 @@ def _save_cache(cache: dict):
     _cache_path().write_text(json.dumps(cache), encoding="utf-8")
 
 
-def ocr_pages(path: str, page_indices: list[int], langs: str) -> dict[int, str]:
+def ocr_pages(path: str, page_indices: list[int], langs: str = RAG_OCR_LANGS) -> dict[int, str]:
     """OCR the given pages, reusing cached text for unchanged files.
 
     Cache key is the full file sha256: a changed file gets a new key, an
