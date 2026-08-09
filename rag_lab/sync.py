@@ -55,7 +55,11 @@ def build_plan(dirs: list[str], docs: list[dict]) -> SyncPlan:
     plan = SyncPlan()
     by_source = {d["source"]: d for d in docs}
     for src in _scan_files(dirs):
-        sha = ingestion.content_sha(Path(src).read_bytes())
+        try:
+            sha = ingestion.content_sha(Path(src).read_bytes())
+        except OSError as e:
+            plan.failed.append(f"{src}: {e}")
+            continue
         doc = by_source.get(src)
         if doc is None:
             plan.added.append(src)
@@ -97,7 +101,7 @@ def apply_plan(
                 src, ocr=ocr, strategy=strategy, chunk_size=chunk_size,
                 overlap=overlap, parent_size=parent_size,
             )
-        except ValueError as e:
+        except Exception as e:
             plan.failed.append(f"{src}: {e}")
             counts["failed"] += 1
             continue

@@ -388,8 +388,8 @@ Citation labels use `lecture03.pptx slide 12` style references.
 ### Scanned PDFs (OCR)
 
 Scanned/image-only PDF pages have no text layer. The PDF parser detects
-low-yield pages (avg under 50 chars/page or more than half the pages empty)
-and OCRs only those — pages with a good text layer are never re-OCR'd.
+low-yield pages (pages yielding under 50 chars of text) and OCRs only those —
+pages with a good text layer are never re-OCR'd.
 
 ```bash
 # Install the engine once (macOS):

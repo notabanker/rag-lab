@@ -46,7 +46,7 @@ Current: `--db-path` defaults to `./chroma_db` ([cli.py:32](rag_lab/cli.py:32));
 - [x] A.2 OCR-Fallback für gescannte PDFs (parsers/ocr.py, dep-Group [ocr], Low-Yield-Seiten nur, Cache keyed by sha)
 - [x] A.4 PPTX-Parser (python-pptx, Slide = Section, Speaker Notes, Citation "slide N")
 - [x] B.2 `rag sync` — inkrementelle Ordner-Sync (added/updated/unchanged/pruned, --dry-run)
-- [x] A.5 Eval-Wachstum Teil 1: DOCX-/PPTX-Fixtures + 9 neue Fragen (24 → 33), v3-Baseline gemessen
+- [x] A.5 Eval-Wachstum Teil 1: DOCX-/PPTX-Fixtures + 9 neue Fragen (23 → 32), v3-Baseline gemessen
 
 ---
 

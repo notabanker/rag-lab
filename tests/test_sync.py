@@ -105,3 +105,30 @@ def test_apply_plan_dry_run_changes_nothing(tmp_path, corpus):
 def test_build_plan_rejects_missing_dir(tmp_path):
     with pytest.raises(ValueError, match="Not a directory"):
         build_plan([str(tmp_path / "nope")], [])
+
+
+def test_sync_survives_corrupt_file(tmp_path, corpus):
+    """A corrupt file (bad pptx) must land in failed — not abort the sync."""
+    _init(tmp_path)
+    (corpus / "broken.pptx").write_bytes(b"\x00\x01\x02 not a real pptx")
+    plan = build_plan([str(corpus)], [])
+    assert str(corpus / "broken.pptx") in plan.added
+    counts = apply_plan(plan, ocr="off", chunk_size=256)
+    assert counts["failed"] == 1
+    assert any("broken.pptx" in f for f in plan.failed)
+    assert counts["added"] == 2  # a.md + b.md weiterhin ingesiert
+    assert len(manifest.list_documents()) == 2
+
+
+def test_build_plan_records_unreadable_file_in_failed(tmp_path, corpus):
+    """An unreadable file must land in plan.failed — not abort the plan."""
+    import os
+
+    if os.geteuid() == 0:
+        pytest.skip("chmod hat als Root keine Wirkung")
+    bad = corpus / "unreadable.pdf"
+    bad.write_text("nope")
+    bad.chmod(0o000)
+    plan = build_plan([str(corpus)], [])
+    assert any("unreadable.pdf" in f for f in plan.failed)
+    assert set(plan.added) == {str(corpus / "a.md"), str(corpus / "sub" / "b.md")}
