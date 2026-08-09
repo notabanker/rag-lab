@@ -154,3 +154,62 @@ questions:
     question: What is the capital of Australia?
     expect_refusal: true
     tags: [refusal]
+
+  # ---- V2.1 Corpus-Reality: DOCX/PPTX (Uni-Fragen, deutsch) ----
+  - id: ml-supervised
+    question: Worin unterscheiden sich überwachtes und unüberwachtes Lernen?
+    expected_sources: [machine_learning_notes.docx]
+    expected_fragments: [gelabelten Daten, unüberwacht]
+    expected_chunk_fragments: [unüberwachten Lernen]
+    tags: [de, uni, docx]
+
+  - id: ml-gradient
+    question: Wozu dient der Gradientenabstieg beim Training?
+    expected_sources: [machine_learning_notes.docx]
+    expected_fragments: [Verlustfunktion, Gewichte]
+    expected_chunk_fragments: [Gradientenabstieg]
+    tags: [de, uni, docx]
+
+  - id: ml-f1
+    question: Wie ist der F1-Score definiert?
+    expected_sources: [machine_learning_notes.docx]
+    expected_fragments: [harmonische Mittel, Precision, Recall]
+    tags: [de, uni, docx]
+
+  - id: thesis-pages
+    question: Wie umfangreich soll die Bachelorarbeit in der Regel sein?
+    expected_sources: [bachelor_thesis_guide.docx]
+    expected_fragments: [60 Seiten]
+    expected_chunk_fragments: [60 Seiten]
+    tags: [de, uni, docx]
+
+  - id: thesis-font
+    question: In welcher Schriftgröße wird das Manuskript der Bachelorarbeit gesetzt?
+    expected_sources: [bachelor_thesis_guide.docx]
+    expected_fragments: [12-Punkt]
+    tags: [de, uni, docx]
+
+  - id: thesis-deadline
+    question: Wann endet die Abgabefrist für die Bachelorarbeit?
+    expected_sources: [bachelor_thesis_guide.docx]
+    expected_fragments: [15. September]
+    tags: [de, uni, docx]
+
+  - id: ai-finance-apps
+    question: In welchen Bereichen wird KI im Finanzwesen laut der Vorlesung eingesetzt?
+    expected_sources: [lecture03.pptx]
+    expected_fragments: [Kreditausfälle, Betrugserkennung]
+    tags: [de, uni, pptx]
+
+  - id: ai-finance-robo
+    question: Was leistet Robo-Advisory laut der Vorlesung?
+    expected_sources: [lecture03.pptx]
+    expected_fragments: [Anlageberatung]
+    tags: [de, uni, pptx]
+
+  - id: ai-finance-notes
+    question: Welches Kernmodell wird laut den Sprechernotizen der dritten Folie verwendet?
+    expected_sources: [lecture03.pptx]
+    expected_fragments: [logistischer Regression, Kreditrisikobewertung]
+    expected_chunk_fragments: [Kreditrisikobewertung]
+    tags: [de, uni, pptx, notes, hard]

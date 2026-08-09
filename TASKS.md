@@ -42,6 +42,12 @@ Current: `--db-path` defaults to `./chroma_db` ([cli.py:32](rag_lab/cli.py:32));
 - [x] Constant-time Token-Vergleich: `hmac.compare_digest` in [web.py](rag_lab/web.py) — no timing side channel on the API token
 - [x] Keyword-Exhaustivität: keyword branch in [retriever.py](rag_lab/retriever.py) passes all matches (up to `top_k`) to the LLM
 
+### V2.1 Corpus-Reality — **M/L**
+- [x] A.2 OCR-Fallback für gescannte PDFs (parsers/ocr.py, dep-Group [ocr], Low-Yield-Seiten nur, Cache keyed by sha)
+- [x] A.4 PPTX-Parser (python-pptx, Slide = Section, Speaker Notes, Citation "slide N")
+- [x] B.2 `rag sync` — inkrementelle Ordner-Sync (added/updated/unchanged/pruned, --dry-run)
+- [x] A.5 Eval-Wachstum Teil 1: DOCX-/PPTX-Fixtures + 9 neue Fragen (24 → 33), v3-Baseline gemessen
+
 ---
 
 ## Phase A — Corpus reality
@@ -59,15 +65,15 @@ Current: `--db-path` defaults to `./chroma_db` ([cli.py:32](rag_lab/cli.py:32));
 - [x] Tests: text PDF (clean report), empty-text fixture (warning + refusal)
 
 ### A.2 OCR fallback for scanned PDFs — **L**
-- [ ] Decide the engine — recommendation: `ocrmypdf` as an optional dependency group
+- [x] Decide the engine — recommendation: `ocrmypdf` as an optional dependency group
       (`uv sync --group ocr`), since it handles rasterization, deskew, and language packs;
       document `brew install tesseract tesseract-lang` for deu+eng
-- [ ] Wire into the PDF parser: only pages flagged low-yield by A.1 get OCR'd (never re-OCR good text layers)
-- [ ] Cache OCR output keyed by `file_sha` (OCR is expensive; re-ingest must be cheap) — store beside the manifest
-- [ ] `--ocr/--no-ocr` flag on `ingest`/`rebuild`; auto-on when engine is installed, clear error pointing to install docs when not
-- [ ] Languages: default `deu+eng`, configurable via `RAG_OCR_LANGS`
-- [ ] Tests: tiny scanned-PDF fixture → OCR path produces chunks; cache-hit test
-- [ ] documentation.md: "No OCR" leaves Known Limitations
+- [x] Wire into the PDF parser: only pages flagged low-yield by A.1 get OCR'd (never re-OCR good text layers)
+- [x] Cache OCR output keyed by `file_sha` (OCR is expensive; re-ingest must be cheap) — store beside the manifest
+- [x] `--ocr/--no-ocr` flag on `ingest`/`rebuild`; auto-on when engine is installed, clear error pointing to install docs when not
+- [x] Languages: default `deu+eng`, configurable via `RAG_OCR_LANGS`
+- [x] Tests: tiny scanned-PDF fixture → OCR path produces chunks; cache-hit test
+- [x] documentation.md: "No OCR" leaves Known Limitations
 
 ### A.3 DOCX parser — **M**
 - [x] Add `python-docx` dependency
@@ -78,17 +84,17 @@ Current: `--db-path` defaults to `./chroma_db` ([cli.py:32](rag_lab/cli.py:32));
 - [x] Update supported-formats list in docs (dashboard/MCP derive their format list from `PARSERS`, so no separate accept-list edits needed)
 
 ### A.4 PPTX parser — **M**
-- [ ] Add `python-pptx` dependency
-- [ ] New [parsers/pptx.py](rag_lab/parsers): all text frames per slide + speaker notes; one logical section per slide
-- [ ] Citation labels: `lecture03.pptx slide 12`
-- [ ] Consider slide = natural parent chunk for small-to-big (slides are short; verify chunker behavior on tiny sections)
-- [ ] Register `.pptx`; tests + fixture (title, bullets, notes)
-- [ ] Update docs, dashboard accept-list, MCP description
+- [x] Add `python-pptx` dependency
+- [x] New [parsers/pptx.py](rag_lab/parsers): all text frames per slide + speaker notes; one logical section per slide
+- [x] Citation labels: `lecture03.pptx slide 12`
+- [x] Consider slide = natural parent chunk for small-to-big (slides are short; verify chunker behavior on tiny sections)
+- [x] Register `.pptx`; tests + fixture (title, bullets, notes)
+- [x] Update docs, dashboard accept-list, MCP description
 
 ### A.5 Eval coverage for new formats — **S**
-- [ ] Add a DOCX and a PPTX sample to `data/`
-- [ ] Add golden questions targeting them in [eval/questions.yaml](eval/questions.yaml) (incl. one slide-notes question)
-- [ ] Re-baseline: run `rag eval --retrieval-only`, update the README metrics table
+- [x] Add a DOCX and a PPTX sample to `data/`
+- [x] Add golden questions targeting them in [eval/questions.yaml](eval/questions.yaml) (incl. one slide-notes question)
+- [x] Re-baseline: run `rag eval --retrieval-only`, update the README metrics table
 
 ---
 
@@ -108,13 +114,13 @@ Design: a workspace = named bundle of {collection, question set, optional model 
 - [ ] Tests: resolution order, collection mapping, cross-workspace isolation (ingest into `uni`, assert invisible in `personal`)
 
 ### B.2 `rag sync` — incremental folder ingestion — **M**
-- [ ] `rag sync <dir>... [--prune] [--dry-run]`: recursive scan for supported extensions
-- [ ] Skip unchanged files: compare content SHA against the manifest ([manifest.py](rag_lab/manifest.py) already stores `file_sha`)
-- [ ] Re-ingest changed files (existing SHA-replace flow in [ingestion.py](rag_lab/ingestion.py) already handles dedupe)
-- [ ] `--prune`: delete indexed docs whose source path no longer exists (confirm unless `--yes`)
-- [ ] Summary table: added / updated / unchanged / pruned / failed (with parse-quality warnings from A.1)
-- [ ] Respect workspaces (`rag sync ~/uni/semester4 --workspace uni`)
-- [ ] Tests: unchanged-skip, changed-reingest, prune, dry-run
+- [x] `rag sync <dir>... [--prune] [--dry-run]`: recursive scan for supported extensions
+- [x] Skip unchanged files: compare content SHA against the manifest ([manifest.py](rag_lab/manifest.py) already stores `file_sha`)
+- [x] Re-ingest changed files (existing SHA-replace flow in [ingestion.py](rag_lab/ingestion.py) already handles dedupe)
+- [x] `--prune`: delete indexed docs whose source path no longer exists (confirm unless `--yes`)
+- [x] Summary table: added / updated / unchanged / pruned / failed (with parse-quality warnings from A.1)
+- [ ] Respect workspaces (`rag sync ~/uni/semester4 --workspace uni`) — depends on B.1 (workspaces not yet implemented)
+- [x] Tests: unchanged-skip, changed-reingest, prune, dry-run
 - [ ] (Parking lot, not now: `--watch` mode with filesystem events)
 
 ### B.3 MCP as the primary daily interface — **M**
