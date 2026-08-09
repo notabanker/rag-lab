@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from rag_lab import manifest, vector_store, web
+from rag_lab import config, manifest, vector_store, web
 from rag_lab.web import app
 
 
@@ -17,7 +17,7 @@ def test_dashboard_config_and_stats_endpoints():
     client = TestClient(app)
     cfg = client.get("/api/config")
     assert cfg.status_code == 200
-    assert cfg.json()["llm_model"] == "qwen/qwen3.7-plus"
+    assert cfg.json()["llm_model"] == config.LLM_MODEL
 
     stats = client.get("/api/stats")
     assert stats.status_code == 200
