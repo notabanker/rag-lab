@@ -48,6 +48,12 @@ Current: `--db-path` defaults to `./chroma_db` ([cli.py:32](rag_lab/cli.py:32));
 - [x] B.2 `rag sync` — inkrementelle Ordner-Sync (added/updated/unchanged/pruned, --dry-run)
 - [x] A.5 Eval-Wachstum Teil 1: DOCX-/PPTX-Fixtures + 9 neue Fragen (23 → 32), v3-Baseline gemessen
 
+**Phase-2-Follow-ups aus dem V2.1-Final-Review** (kein Phase-1-Fix; Evidenz: <db>/runs.sqlite3 Runs 26/29/30):
+- crosslang-cp + fintech-cp Fragen-Regression (Ranking-Shift durch Corpus-Wachstum) — Fragen umformulieren oder Rerank auf 4k-Chunk-Corpus prüfen
+- PPTX Group-Shapes/SmartArt werden nicht rekursiert (content loss) + Tabellen-Zweig ungetestet
+- Pfadform-Divergenz: ingest_file speichert source ohne resolve — sync mit relativen Pfaden matcht Manifest nicht
+- OCR: Text-PDF-Fixture für „gute Seiten nie OCR'd"; Cache unbounded (Prune/Append bei Wachstum)
+
 ---
 
 ## Phase A — Corpus reality
