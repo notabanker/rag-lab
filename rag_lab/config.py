@@ -28,6 +28,9 @@ LLM_TIMEOUT = _env_int("LLM_TIMEOUT", 180)            # seconds, generator
 LLM_VERIFIER_TIMEOUT = _env_int("LLM_VERIFIER_TIMEOUT", 120)
 LLM_MAX_RETRIES = _env_int("LLM_MAX_RETRIES", 2)      # on 429/5xx/network errors
 
+# OCR (scanned PDFs): languages for tesseract, "deu+eng" typical.
+RAG_OCR_LANGS = _env_str("RAG_OCR_LANGS", "deu+eng")
+
 # Upload guard for the web API.
 MAX_UPLOAD_BYTES = _env_int("RAG_MAX_UPLOAD_MB", 200) * 1024 * 1024
 MAX_INGEST_CHUNKS = 100_000
