@@ -4,6 +4,7 @@ from .pdf import parse_pdf
 from .epub import parse_epub
 from .markdown import parse_markdown
 from .docx import parse_docx
+from .pptx import parse_pptx
 
 PARSERS = {
     ".pdf": parse_pdf,
@@ -11,6 +12,7 @@ PARSERS = {
     ".md": parse_markdown,
     ".markdown": parse_markdown,
     ".docx": parse_docx,
+    ".pptx": parse_pptx,
 }
 
 def pick_parser(path: str):

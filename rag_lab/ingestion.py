@@ -40,6 +40,9 @@ def _citation(source: str, marker: str | None, chunk_idx: int) -> str:
         page = re.search(r"page\s+(\d+)", marker, re.IGNORECASE)
         if page:
             return f"{name} p.{page.group(1)}"
+        slide = re.search(r"slide\s+(\d+)", marker, re.IGNORECASE)
+        if slide:
+            return f"{name} slide {slide.group(1)}"
         return f"{name} §{marker}"
     return f"{name} chunk {chunk_idx + 1}"
 
