@@ -37,6 +37,11 @@ Current: `--db-path` defaults to `./chroma_db` ([cli.py:32](rag_lab/cli.py:32));
 - [x] Update tests that assume `./chroma_db`; add a test for the resolution order
 - [x] Update README + documentation.md ("CWD-dependent DB" leaves Known Limitations)
 
+### V2.0 Sofort-Härtung — **S**
+- [x] 0.0.0.0-Loopback-Fix: `is_loopback_host` in [config.py](rag_lab/config.py) — 0.0.0.0 is not loopback; serving on all interfaces now requires `RAG_API_TOKEN`
+- [x] Constant-time Token-Vergleich: `hmac.compare_digest` in [web.py](rag_lab/web.py) — no timing side channel on the API token
+- [x] Keyword-Exhaustivität: keyword branch in [retriever.py](rag_lab/retriever.py) passes all matches (up to `top_k`) to the LLM
+
 ---
 
 ## Phase A — Corpus reality

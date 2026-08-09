@@ -221,14 +221,16 @@ def _retrieve(question: str, cfg: RetrievalConfig) -> dict:
         }
 
     if cfg.keyword:
-        chunks = vector_store.keyword_search(cfg.keyword, limit=cfg.rerank_top)
+        chunks = vector_store.keyword_search(cfg.keyword, limit=cfg.top_k)
         if not chunks:
             return {
                 "answer": f"No chunks matched keyword: {cfg.keyword}",
                 "chunks": [], "verifier": verdict,
                 "iterations": 0, "trace": trace, "usage": usage,
             }
-        chunks = select_context_chunks(chunks, cfg)
+        # No relevance ranking in keyword mode: every match (up to the context
+        # budget) goes to the LLM — exhaustive, not capped at rerank_top.
+        chunks = _apply_context_budget(chunks, cfg.max_context_chars)
         context = _format_context(chunks)
         try:
             answer, u = _generate(f"CONTEXT:\n{context}\n\nQUESTION: {current_q}\n\nANSWER:", model=cfg.model, max_tokens=cfg.max_tokens)

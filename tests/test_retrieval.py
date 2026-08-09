@@ -111,3 +111,36 @@ def test_verify_receives_original_question_not_refined(monkeypatch):
     assert result["answer"] == "I don't know from the provided documents."
     assert result.get("partial") is True
     assert result["trace"][-1].get("withheld") is True
+
+
+def test_keyword_mode_includes_all_matches(monkeypatch):
+    """Keyword mode is documented as exhaustive enumeration: every match
+    (up to top_k and the context budget) must reach the LLM — the old
+    limit=rerank_top silently dropped matches 6+."""
+    from rag_lab.retriever import _retrieve, RetrievalConfig
+    from rag_lab import vector_store as vs
+
+    hits = [
+        {"id": f"m{i}", "text": f"match {i} about LCR.", "metadata": {"source": "a.md", "citation": f"a.md chunk {i+1}"}}
+        for i in range(7)
+    ]
+    seen = {}
+    def fake_keyword(pattern, limit=200):
+        seen["limit"] = limit
+        return hits
+    monkeypatch.setattr(vs, "keyword_search", fake_keyword)
+    monkeypatch.setattr(
+        "rag_lab.retriever._generate",
+        lambda prompt, model=None, max_tokens=600: ("fake answer", {"prompt_tokens": 10, "completion_tokens": 5}),
+    )
+    monkeypatch.setattr(
+        "rag_lab.retriever.verify",
+        lambda question, answer, chunks, model=None, chunk_cap=12000: {
+            "score": 9, "grounded": True, "issues": [], "verdict": "GROUNDED", "_usage": {}
+        },
+    )
+
+    result = _retrieve("LCR", RetrievalConfig(keyword="LCR", top_k=50))
+
+    assert seen["limit"] == 50, f"keyword_search limit was {seen['limit']}, expected top_k (50)"
+    assert len(result["chunks"]) == 7, f"got {len(result['chunks'])} chunks, expected all 7 matches"
