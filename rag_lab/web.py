@@ -1,3 +1,4 @@
+import hmac
 import logging
 import tempfile
 from pathlib import Path
@@ -35,7 +36,7 @@ def require_api_token(authorization: str | None = Header(default=None)):
     token = get_api_token()
     if not token:
         return
-    if authorization != f"Bearer {token}":
+    if not hmac.compare_digest(authorization or "", f"Bearer {token}"):
         raise HTTPException(status_code=401, detail="Missing or invalid API token")
 
 
