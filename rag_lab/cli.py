@@ -124,6 +124,55 @@ def rebuild(
     console.print(f"[bold green]Rebuild complete[/bold green]: {total} chunks in {vector_store.default_collection_name()}")
 
 @app.command()
+def sync(
+    dirs: list[str] = typer.Argument(..., help="Directories to scan recursively"),
+    prune: bool = typer.Option(False, "--prune", help="Delete indexed docs whose source file is gone"),
+    yes: bool = typer.Option(False, "--yes", help="Skip the prune confirmation"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would change without changing anything"),
+    ocr: bool | None = typer.Option(None, "--ocr/--no-ocr", help="OCR scanned PDF pages (default: auto)"),
+    strategy: str = typer.Option("sentence", "--strategy", help="fixed | sentence"),
+    chunk_size: int = typer.Option(512, "--size"),
+    overlap: int = typer.Option(64, "--overlap"),
+    parent_size: int = typer.Option(4, "--parent-size"),
+):
+    """Incrementally sync directories into the index (added/updated/unchanged/pruned)."""
+    from . import manifest as mf
+    from . import sync as sync_mod
+    plan = sync_mod.build_plan(dirs, mf.list_documents())
+    ocr_mode = "auto" if ocr is None else ("on" if ocr else "off")
+
+    t = Table(title="Sync plan" + (" (dry run)" if dry_run else ""))
+    t.add_column("Action")
+    t.add_column("Count")
+    t.add_row("added", str(len(plan.added)))
+    t.add_row("updated", str(len(plan.updated)))
+    t.add_row("unchanged", str(len(plan.unchanged)))
+    t.add_row("pruned", str(len(plan.pruned)))
+    if plan.failed:
+        t.add_row("failed", str(len(plan.failed)))
+    console.print(t)
+    for src in plan.added + plan.updated + plan.pruned:
+        console.print(f"  {src}")
+    for f in plan.failed:
+        console.print(f"[yellow]  failed: {f}[/yellow]")
+
+    if plan.pruned and prune and not dry_run and not yes:
+        if not typer.confirm(f"Delete {len(plan.pruned)} indexed document(s) whose source is gone?"):
+            plan.pruned = []
+
+    counts = sync_mod.apply_plan(
+        plan, dry_run=dry_run, ocr=ocr_mode,
+        strategy=strategy, chunk_size=chunk_size,
+        overlap=overlap, parent_size=parent_size,
+    )
+    verb = "Would change" if dry_run else "Done"
+    summary = (f"{counts['added']} added, {counts['updated']} updated, "
+               f"{counts['unchanged']} unchanged, {counts['pruned']} pruned")
+    if counts["failed"]:
+        summary += f", {counts['failed']} failed"
+    console.print(f"[green]{verb}[/green]: {summary}")
+
+@app.command()
 def query(
     question: str = typer.Argument(...),
     mode: str = typer.Option("hybrid", "--mode", help="vector | lexical | hybrid"),
