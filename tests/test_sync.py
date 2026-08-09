@@ -65,6 +65,34 @@ def test_apply_plan_prunes_missing_sources(tmp_path, corpus):
     assert remaining == {str(corpus / "sub" / "b.md")}
 
 
+def test_sync_cli_without_prune_keeps_missing_docs(tmp_path, corpus):
+    """Binding constraint: --prune gates deletion — a plain `rag sync <dir>`
+    never deletes indexed docs whose source file is gone (silent data loss)."""
+    from rag_lab.cli import sync as cli_sync
+
+    _init(tmp_path)
+    ingestion.ingest_file(str(corpus / "a.md"), ocr="off", chunk_size=256)
+    (corpus / "a.md").unlink()
+
+    cli_sync([str(corpus)])
+
+    assert manifest.get_document(str(corpus / "a.md")) is not None  # nicht gelöscht
+
+
+def test_sync_cli_prune_declined_keeps_docs(tmp_path, corpus, monkeypatch):
+    """Declined prune confirmation keeps the docs — the prompt is the gate."""
+    from rag_lab.cli import sync as cli_sync
+
+    _init(tmp_path)
+    ingestion.ingest_file(str(corpus / "a.md"), ocr="off", chunk_size=256)
+    (corpus / "a.md").unlink()
+
+    monkeypatch.setattr("typer.confirm", lambda *a, **k: False)
+    cli_sync([str(corpus)], prune=True)
+
+    assert manifest.get_document(str(corpus / "a.md")) is not None  # nicht gelöscht
+
+
 def test_apply_plan_dry_run_changes_nothing(tmp_path, corpus):
     _init(tmp_path)
     ingestion.ingest_file(str(corpus / "a.md"), ocr="off", chunk_size=256)

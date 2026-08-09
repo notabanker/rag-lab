@@ -92,10 +92,6 @@ def apply_plan(
               "pruned": 0, "failed": 0}
     for src in plan.added + plan.updated:
         old = manifest.get_document(src)
-        if old is not None:
-            # Replace, don't accumulate: drop the previous sha's chunks so a
-            # rewritten file never leaves orphans behind.
-            vector_store.delete_document(old["file_sha"])
         try:
             ingestion.ingest_file(
                 src, ocr=ocr, strategy=strategy, chunk_size=chunk_size,
@@ -105,6 +101,12 @@ def apply_plan(
             plan.failed.append(f"{src}: {e}")
             counts["failed"] += 1
             continue
+        if old is not None:
+            # Replace, don't accumulate: drop the previous sha's chunks AFTER
+            # the new version is safely in — a failed ingest (e.g. a rewritten
+            # file that now extracts no text) must leave the old version
+            # intact. Same atomic-swap doctrine as ingestion.ingest_file.
+            vector_store.delete_document(old["file_sha"])
         counts["updated" if old is not None else "added"] += 1
     for src in plan.pruned:
         vector_store.delete_document(src)

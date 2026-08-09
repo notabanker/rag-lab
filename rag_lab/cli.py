@@ -156,8 +156,12 @@ def sync(
     for f in plan.failed:
         console.print(f"[yellow]  failed: {f}[/yellow]")
 
-    if plan.pruned and prune and not dry_run and not yes:
-        if not typer.confirm(f"Delete {len(plan.pruned)} indexed document(s) whose source is gone?"):
+    if not dry_run and plan.pruned:
+        # --prune gates deletion itself, not just the confirmation: without
+        # the flag a sync never deletes indexed docs (binding constraint).
+        if not prune:
+            plan.pruned = []
+        elif not yes and not typer.confirm(f"Delete {len(plan.pruned)} indexed document(s) whose source is gone?"):
             plan.pruned = []
 
     counts = sync_mod.apply_plan(
