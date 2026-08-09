@@ -19,3 +19,10 @@ def pick_parser(path: str):
     if ext not in PARSERS:
         raise ValueError(f"Unsupported file type: {ext}")
     return PARSERS[ext]
+
+def parse_file(path: str, ocr: str = "auto"):
+    """Dispatch to the right parser; only PDFs take the OCR mode."""
+    parser = pick_parser(path)
+    if parser is parse_pdf:
+        return parse_pdf(path, ocr=ocr)
+    return parser(path)
