@@ -1,6 +1,6 @@
 # rag-lab
 
-Personal RAG lab for local corpora: PDF + EPUB + Markdown + DOCX -> versioned Chroma collections -> multilingual hybrid retrieval (E5 vectors + BM25 + cross-encoder rerank + small-to-big context) -> cited answers with verifier and eval gates.
+Personal RAG lab for local corpora: PDF + EPUB + Markdown + DOCX + PPTX -> versioned Chroma collections -> multilingual hybrid retrieval (E5 vectors + BM25 + cross-encoder rerank + small-to-big context) -> cited answers with verifier and eval gates.
 
 ## Setup
 
@@ -35,6 +35,7 @@ and uploads are capped by default:
 export RAG_API_TOKEN=change-me     # required for non-loopback hosts
 export RAG_MAX_UPLOAD_MB=200       # per-ingest upload cap
 export RAG_EVAL_DIR=./eval         # allowlist root for eval question files
+export RAG_OCR_LANGS=deu+eng       # tesseract languages for scanned-PDF OCR
 ```
 
 Check the active runtime config:
@@ -55,7 +56,7 @@ scripts/check.sh
 # Ingest one file or rebuild the bundled corpus
 uv run rag ingest ~/some/book.pdf
 uv run rag ingest ~/notes/file.md
-uv run rag rebuild data/markdowns/*.md data/pdfs/*.pdf data/epubs/*.epub
+uv run rag rebuild data/markdowns/*.md data/pdfs/*.pdf data/epubs/*.epub data/docx/*.docx data/pptx/*.pptx
 
 # Ask with the V3.1 default: hybrid + rerank + small-to-big
 uv run rag query "What is DLBBWME about?" --trace
@@ -109,11 +110,11 @@ Tools include search, answer, ingest, delete with confirmation, document list, r
 
 ## Current Baseline
 
-Measured on July 6, 2026 against the bundled 4,072-chunk corpus and 23-question eval set:
+Measured on August 9, 2026 against the bundled 4,076-chunk corpus (now incl. DOCX/PPTX fixtures) and 32-question eval set:
 
-| Variant | Hit@5 | MRR | Chunk Hit@5 | Chunk MRR |
-|---|---:|---:|---:|---:|
-| V3.1 default (`hybrid` + rerank + small-to-big) | 100% | 0.96 | 91% | 0.77 |
+| Variant | Hit@5 | MRR | Chunk Hit@5 | Chunk MRR | Context Hit |
+|---|---:|---:|---:|---:|---:|
+| V3.1 default (`hybrid` + rerank + small-to-big) | 97% | 0.94 | 87% | 0.78 | 97% |
 
 The retrieval gate passes:
 
@@ -121,7 +122,7 @@ The retrieval gate passes:
 uv run rag eval --retrieval-only --gate eval/gates.yaml
 ```
 
-Full answer gates additionally check fragments, refusal behavior, verifier score, and citation validity. They require `OPENROUTER_API_KEY`.
+Full answer gates additionally check fragments, refusal behavior, verifier score, and citation validity. They require an API key (e.g. `OPENROUTER_API_KEY` or `DEEPSEEK_API_KEY`).
 
 ## More
 

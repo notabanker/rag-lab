@@ -578,7 +578,8 @@ def api_ingest(
         if not chunks:
             raise HTTPException(
                 status_code=400,
-                detail="No text extracted — scanned PDF? OCR is not supported yet.",
+                detail="No text extracted — scanned PDF? Enable OCR with: "
+                       "brew install tesseract tesseract-lang && uv sync --group ocr.",
             )
         if len(chunks) > MAX_INGEST_CHUNKS:
             raise HTTPException(

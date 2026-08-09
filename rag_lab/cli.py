@@ -4,7 +4,6 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from .parsers import as_result, pick_parser
 from . import ingestion, vector_store
 from .config import (
     DEFAULT_COLLECTION, EMBEDDING_MODEL, LLM_BASE_URL, LLM_MODEL,
@@ -53,34 +52,27 @@ def _ingest_one(
     parent_size: int,
     force_model_mismatch: bool,
     allow_empty: bool = False,
+    ocr: str = "auto",
 ) -> dict:
     p = Path(file_path)
     if not p.exists():
         raise ValueError(f"File not found: {file_path}")
     console.print(f"[blue]Parsing[/blue] {p.name}...")
-    parsed = as_result(pick_parser(file_path)(file_path))
-    quality = parsed.quality()
+    result = ingestion.ingest_file(
+        file_path, ocr=ocr, strategy=strategy, chunk_size=chunk_size,
+        overlap=overlap, parent_size=parent_size,
+        force_model_mismatch=force_model_mismatch, allow_empty=allow_empty,
+    )
+    quality = result["quality"]
     console.print(
         f"[blue]Parsed[/blue] {quality['sections']} {quality['section_unit']}(s), "
         f"{quality['total_chars']} chars"
     )
     for w in quality["warnings"]:
         console.print(f"[yellow]⚠ {w}[/yellow]")
-    if quality["total_chars"] == 0 and not allow_empty:
-        raise ValueError(
-            "No text extracted — scanned PDF? OCR is not supported yet. "
-            "Use --allow-empty to record the file in the manifest anyway."
-        )
     console.print(f"[blue]Chunking[/blue] strategy={strategy} size={chunk_size} overlap={overlap}...")
-    chunks = ingestion.make_chunks(parsed.effective_text, strategy=strategy, chunk_size=chunk_size, overlap=overlap)
-    if chunks:
-        console.print(f"[blue]Embedding[/blue] {len(chunks)} chunks with {EMBEDDING_MODEL} (CPU)...")
-    result = ingestion.ingest_text(
-        str(p), p.read_bytes(), parsed.effective_text,
-        strategy=strategy, chunk_size=chunk_size, overlap=overlap,
-        parent_size=parent_size, force_model_mismatch=force_model_mismatch,
-        parse_quality=quality,
-    )
+    if result["chunks"]:
+        console.print(f"[blue]Embedding[/blue] {result['chunks']} chunks with {EMBEDDING_MODEL} (CPU)...")
     console.print(f"[green]✅ Ingested[/green] {result['chunks']} chunks from {p.name}")
     return result
 
@@ -93,10 +85,15 @@ def ingest(
     parent_size: int = typer.Option(4, "--parent-size", help="Child chunks grouped into one parent context"),
     force_model_mismatch: bool = typer.Option(False, "--force-model-mismatch", help="Allow ingest into a legacy/mismatched collection"),
     allow_empty: bool = typer.Option(False, "--allow-empty", help="Record a zero-text file in the manifest instead of failing"),
+    ocr: bool | None = typer.Option(
+        None, "--ocr/--no-ocr",
+        help="OCR scanned PDF pages (default: auto — on if tesseract is installed)",
+    ),
 ):
     """Ingest one file into the vector store."""
     try:
-        _ingest_one(file_path, strategy, chunk_size, overlap, parent_size, force_model_mismatch, allow_empty)
+        ocr_mode = "auto" if ocr is None else ("on" if ocr else "off")
+        _ingest_one(file_path, strategy, chunk_size, overlap, parent_size, force_model_mismatch, allow_empty, ocr=ocr_mode)
     except ValueError as e:
         typer.echo(f"❌ {e}")
         raise typer.Exit(1)
@@ -109,17 +106,75 @@ def rebuild(
     overlap: int = typer.Option(64, "--overlap"),
     parent_size: int = typer.Option(4, "--parent-size"),
     force_model_mismatch: bool = typer.Option(False, "--force-model-mismatch"),
+    ocr: bool | None = typer.Option(
+        None, "--ocr/--no-ocr",
+        help="OCR scanned PDF pages (default: auto — on if tesseract is installed)",
+    ),
 ):
     """Batch-ingest files into the active collection using V3 metadata."""
     total = 0
+    ocr_mode = "auto" if ocr is None else ("on" if ocr else "off")
     for file_path in file_paths:
         try:
-            result = _ingest_one(file_path, strategy, chunk_size, overlap, parent_size, force_model_mismatch)
+            result = _ingest_one(file_path, strategy, chunk_size, overlap, parent_size, force_model_mismatch, ocr=ocr_mode)
             total += result["chunks"]
         except ValueError as e:
             typer.echo(f"❌ {file_path}: {e}")
             raise typer.Exit(1)
     console.print(f"[bold green]Rebuild complete[/bold green]: {total} chunks in {vector_store.default_collection_name()}")
+
+@app.command()
+def sync(
+    dirs: list[str] = typer.Argument(..., help="Directories to scan recursively"),
+    prune: bool = typer.Option(False, "--prune", help="Delete indexed docs whose source file is gone"),
+    yes: bool = typer.Option(False, "--yes", help="Skip the prune confirmation"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would change without changing anything"),
+    ocr: bool | None = typer.Option(None, "--ocr/--no-ocr", help="OCR scanned PDF pages (default: auto)"),
+    strategy: str = typer.Option("sentence", "--strategy", help="fixed | sentence"),
+    chunk_size: int = typer.Option(512, "--size"),
+    overlap: int = typer.Option(64, "--overlap"),
+    parent_size: int = typer.Option(4, "--parent-size"),
+):
+    """Incrementally sync directories into the index (added/updated/unchanged/pruned)."""
+    from . import manifest as mf
+    from . import sync as sync_mod
+    plan = sync_mod.build_plan(dirs, mf.list_documents())
+    ocr_mode = "auto" if ocr is None else ("on" if ocr else "off")
+
+    t = Table(title="Sync plan" + (" (dry run)" if dry_run else ""))
+    t.add_column("Action")
+    t.add_column("Count")
+    t.add_row("added", str(len(plan.added)))
+    t.add_row("updated", str(len(plan.updated)))
+    t.add_row("unchanged", str(len(plan.unchanged)))
+    t.add_row("pruned", str(len(plan.pruned)))
+    if plan.failed:
+        t.add_row("failed", str(len(plan.failed)))
+    console.print(t)
+    for src in plan.added + plan.updated + plan.pruned:
+        console.print(f"  {src}")
+    for f in plan.failed:
+        console.print(f"[yellow]  failed: {f}[/yellow]")
+
+    if not dry_run and plan.pruned:
+        # --prune gates deletion itself, not just the confirmation: without
+        # the flag a sync never deletes indexed docs (binding constraint).
+        if not prune:
+            plan.pruned = []
+        elif not yes and not typer.confirm(f"Delete {len(plan.pruned)} indexed document(s) whose source is gone?"):
+            plan.pruned = []
+
+    counts = sync_mod.apply_plan(
+        plan, dry_run=dry_run, ocr=ocr_mode,
+        strategy=strategy, chunk_size=chunk_size,
+        overlap=overlap, parent_size=parent_size,
+    )
+    verb = "Would change" if dry_run else "Done"
+    summary = (f"{counts['added']} added, {counts['updated']} updated, "
+               f"{counts['unchanged']} unchanged, {counts['pruned']} pruned")
+    if counts["failed"]:
+        summary += f", {counts['failed']} failed"
+    console.print(f"[green]{verb}[/green]: {summary}")
 
 @app.command()
 def query(

@@ -29,7 +29,7 @@ class ParseResult:
         warnings = []
         if total == 0:
             warnings.append(
-                "no text extracted — scanned/image-only file? OCR is not supported yet"
+                "no text extracted — enable OCR with: brew install tesseract tesseract-lang && uv sync --group ocr"
             )
         elif self.section_unit == "page":
             if avg < LOW_YIELD_PAGE_CHARS:

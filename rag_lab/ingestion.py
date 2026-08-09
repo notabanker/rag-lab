@@ -40,6 +40,9 @@ def _citation(source: str, marker: str | None, chunk_idx: int) -> str:
         page = re.search(r"page\s+(\d+)", marker, re.IGNORECASE)
         if page:
             return f"{name} p.{page.group(1)}"
+        slide = re.search(r"slide\s+(\d+)", marker, re.IGNORECASE)
+        if slide:
+            return f"{name} slide {slide.group(1)}"
         return f"{name} §{marker}"
     return f"{name} chunk {chunk_idx + 1}"
 
@@ -119,3 +122,37 @@ def ingest_text(
     vector_store.delete_stale_chunks(file_sha, set(ids))
     manifest.log_document(source, file_sha, len(chunks), parse_report=parse_quality)
     return {"chunks": len(chunks), "file_sha": file_sha, "warnings": warnings}
+
+def ingest_file(
+    path: str,
+    ocr: str = "auto",
+    strategy: str = "sentence",
+    chunk_size: int = 512,
+    overlap: int = 64,
+    parent_size: int = 4,
+    force_model_mismatch: bool = False,
+    allow_empty: bool = False,
+) -> dict:
+    """Parse + quality-check + chunk + embed + store one file (silent).
+
+    Shared by the CLI and `rag sync`. Returns {'chunks', 'file_sha',
+    'warnings', 'quality'}; raises ValueError on unusable input.
+    """
+    from .parsers import as_result, parse_file
+    parsed = as_result(parse_file(path, ocr))
+    quality = parsed.quality()
+    if quality["total_chars"] == 0 and not allow_empty:
+        raise ValueError(
+            "No text extracted — scanned PDF? Enable OCR with: "
+            "brew install tesseract tesseract-lang && uv sync --group ocr. "
+            "Use --allow-empty to record the file in the manifest anyway."
+        )
+    content = Path(path).read_bytes()
+    result = ingest_text(
+        path, content, parsed.effective_text,
+        strategy=strategy, chunk_size=chunk_size, overlap=overlap,
+        parent_size=parent_size, force_model_mismatch=force_model_mismatch,
+        parse_quality=quality,
+    )
+    result["quality"] = quality
+    return result

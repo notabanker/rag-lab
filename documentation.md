@@ -1,7 +1,7 @@
 # rag-lab Documentation
 
 Standalone RAG (Retrieval-Augmented Generation) learning project.  
-Ingest PDF, EPUB, Markdown → embed → ChromaDB → hybrid retrieval → cited answer with verifier → eval gates, dashboard, and MCP tools.
+Ingest PDF, EPUB, Markdown, DOCX, PPTX → embed → ChromaDB → hybrid retrieval → cited answer with verifier → eval gates, dashboard, and MCP tools.
 
 ---
 
@@ -111,7 +111,7 @@ uv run rag ingest ~/Documents/handbook.pdf --strategy fixed --size 256 --overlap
 uv run rag --db-path ~/my_chroma_db ingest report.md
 ```
 
-**Supported formats:** `.pdf`, `.epub`, `.md`, `.markdown`, `.docx`
+**Supported formats:** `.pdf`, `.epub`, `.md`, `.markdown`, `.docx`, `.pptx`
 
 **What happens:**
 1. Parser extracts raw text from the file and reports per-section (page/chapter) character counts
@@ -126,10 +126,37 @@ uv run rag --db-path ~/my_chroma_db ingest report.md
 ### `rag rebuild` — batch-ingest a corpus
 
 ```bash
-uv run rag rebuild data/markdowns/*.md data/pdfs/*.pdf data/epubs/*.epub
+uv run rag rebuild data/markdowns/*.md data/pdfs/*.pdf data/epubs/*.epub data/docx/*.docx data/pptx/*.pptx
 ```
 
 `rebuild` uses the same options as `ingest` and writes to the active collection. V3's default collection is versioned from the embedding model and chunking version, e.g. `rag_lab_v3-intfloat-multilingual-e5-small-sentence-v2-parent`, so V3 indexes do not silently mix with legacy M2 indexes.
+
+### `rag sync` — incrementally sync directories
+
+```bash
+uv run rag sync <dir>... [--prune] [--dry-run] [--yes]
+```
+
+`sync` recursively scans the given directories for supported extensions and
+compares each file's content SHA against the manifest:
+
+| Action | Meaning |
+|---|---|
+| added | file not in the manifest — ingested |
+| updated | same source path, different SHA — re-ingested (old chunks replaced) |
+| unchanged | same source path and same SHA — skipped |
+| pruned | source file gone (only with `--prune`, confirmed unless `--yes`) |
+| failed | parse/ingest error — listed with the parse-quality warning |
+
+`--dry-run` prints the plan without changing anything. `--prune` gates
+deletion itself: without it a sync never deletes indexed documents. The
+`--ocr/--no-ocr` flag applies to scanned PDFs (default: auto — on when the OCR
+engine is installed).
+
+```bash
+uv run rag sync ~/uni/semester4 --prune
+uv run rag sync ~/uni/semester4 --dry-run
+```
 
 ---
 
@@ -315,7 +342,7 @@ API endpoints (errors are returned as proper HTTP status codes with a JSON `deta
 - `GET /api/runs`, `GET /api/runs/{id}`
 - `GET /api/evals`, `GET /api/evals/{id}`, `POST /api/eval`
 
-`POST /api/eval` defaults to retrieval-only. Full evals call the configured LLM and should be run only when `OPENROUTER_API_KEY` is present.
+`POST /api/eval` defaults to retrieval-only. Full evals call the configured LLM and should be run only when an API key is configured.
 
 ---
 
@@ -341,13 +368,43 @@ The MCP server runs on stdio and exposes corpus/retrieval tools:
 ## Parsers
 
 ### PDF (`pypdf`)
-Extracts text from all pages. Handles text-based PDFs. Scanned/image-only PDFs produce empty output — no OCR.
+Extracts text from all pages. Handles text-based PDFs. Scanned/image-only PDFs fall back to OCR — see [Scanned PDFs (OCR)](#scanned-pdfs-ocr).
 
 ### EPUB (`ebooklib` + `BeautifulSoup`)
 Extracts text from all HTML documents in the EPUB container. Strips HTML tags, preserves structure via separators.
 
 ### Markdown (`markdown-it-py`)
 Strips YAML frontmatter, renders markdown to plain-ish text. Handles headings, paragraphs, inline text, code blocks. Lists, tables, and blockquotes are simplified.
+
+### DOCX (`python-docx`)
+Extracts paragraphs and headings (heading text stays inline for chunk
+context); tables are flattened row-per-line. Citation labels use heading-based
+section references (e.g. `report.docx §2.3 Methods`) since DOCX has no pages.
+
+### PPTX (`python-pptx`)
+All text frames per slide plus speaker notes; one logical section per slide.
+Citation labels use `lecture03.pptx slide 12` style references.
+
+### Scanned PDFs (OCR)
+
+Scanned/image-only PDF pages have no text layer. The PDF parser detects
+low-yield pages (pages yielding under 50 chars of text) and OCRs only those —
+pages with a good text layer are never re-OCR'd.
+
+```bash
+# Install the engine once (macOS):
+brew install tesseract tesseract-lang
+# Install the Python deps:
+uv sync --group ocr
+```
+
+OCR is auto-enabled when the engine is installed; force it on/off per command
+with `--ocr` / `--no-ocr` (also on `rag sync`). Languages default to `deu+eng`,
+configurable via `RAG_OCR_LANGS` (tesseract language codes, `+`-joined).
+
+OCR output is cached at `<db-path>/ocr_cache.json`, keyed by the file's full
+sha256 — re-ingesting an unchanged file is a pure cache hit, and changing
+`RAG_OCR_LANGS` recomputes only the affected entries.
 
 ---
 
@@ -402,6 +459,7 @@ Runtime settings are read from environment variables. The app does not automatic
 | `RAG_API_TOKEN` | — | Bearer token required for all `/api` routes; `rag serve` refuses to bind a non-loopback host without it (fail-closed) |
 | `RAG_MAX_UPLOAD_MB` | `200` | Per-ingest upload cap for `POST /api/ingest` (413 above it) |
 | `RAG_EVAL_DIR` | `./eval` | Allowlist root for eval question files; paths outside it are rejected |
+| `RAG_OCR_LANGS` | `deu+eng` | Tesseract language codes (`+`-joined) for scanned-PDF OCR |
 | `LLM_TIMEOUT` | `180` | Request timeout (s) for the answer generator |
 | `LLM_VERIFIER_TIMEOUT` | `120` | Request timeout (s) for the verifier |
 | `LLM_MAX_RETRIES` | `2` | Retries on 429/5xx/network errors, with exponential backoff |
@@ -474,6 +532,8 @@ Measure the effect on your own corpus with `uv run rag compare --retrieval-only`
 | Context chars avg | 3180 | 2597 | 2977 | 3301 | 8027 |
 
 Takeaways: the multilingual E5 embedder fixes the old vector ceiling, hybrid retrieval reaches 100% source hit even without rerank, and the multilingual reranker lifts chunk hit rate to 91%. Small-to-big does not change child-ranking metrics, but it gives the LLM larger cited context windows.
+
+**Latest V3.1 baseline** (32-question golden set incl. DOCX/PPTX fixtures, 4,076 chunks, retrieval-only, measured 2026-08-09): hit@5 97%, MRR 0.94, chunk hit@5 87%, chunk MRR 0.78, context hit 97%. The two remaining misses are the pre-existing `crosslang-cp` (source rank 7) and the `fintech-cp` chunk check — both tracked in the eval run history.
 
 ---
 
@@ -662,7 +722,7 @@ rag-lab/
 - **Full eval requires an API key**: Retrieval-only evals are local. Full answer evals need `OPENROUTER_API_KEY` or another configured provider key.
 - **Local model downloads**: The E5 embedder and cross-encoder reranker are local models. First use may download weights, and reranked evals are slower on CPU.
 - **Only selected context reaches the LLM**: Exhaustive enumeration still requires keyword mode or a larger `--rerank`/`--parent-top-k`.
-- **No OCR**: Scanned/image PDFs produce empty text. Only text-layer PDFs work.
+- **OCR needs the engine installed**: Scanned PDFs are OCR'd only when tesseract is installed (`brew install tesseract tesseract-lang`) and the `[ocr]` group is synced (`uv sync --group ocr`). Without them, scanned pages stay empty (flagged as low-yield).
 - **Collection safety is manual**: Collections are versioned and deletable, but the tool is still a single-user personal RAG lab, not a multi-tenant service.
 - **Re-ingest replaces by content hash**: Re-ingesting a file deletes previous chunks with the same SHA before upserting the new chunks.
 - **No streaming**: LLM responses are fully buffered. No token-by-token output.

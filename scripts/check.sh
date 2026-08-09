@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Green check: full test suite + retrieval gate. Run before every commit/push.
-# Baseline (v3.1.0): hit@5 100%, MRR 0.96, chunk hit@5 91%, chunk MRR 0.77.
+# Baseline (v3.1.0, 32-question set): hit@5 97%, MRR 0.94, chunk hit@5 87%, chunk MRR 0.78, context hit 97%.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
