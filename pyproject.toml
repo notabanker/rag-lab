@@ -39,3 +39,8 @@ packages = ["rag_lab"]
 
 [tool.uv]
 managed = false
+
+[tool.pytest.ini_options]
+# Model-loading tests are opt-in: `pytest` stays fast, scripts/check.sh runs both.
+addopts = "-m 'not slow'"
+markers = ["slow: loads real embedding/reranker models (minutes on a cold cache)"]

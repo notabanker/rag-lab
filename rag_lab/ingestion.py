@@ -5,6 +5,7 @@ import re
 
 from . import chunker, embedder, manifest, vector_store
 from .config import CHUNKING_VERSION, EMBEDDING_MODEL, INDEX_VERSION
+from .parsers.base import OCR_INSTALL_CMD
 
 # Label branch: starts with a non-hyphen, may contain single hyphens
 # ("State-of-the-art") but never crosses a "---" or a newline.
@@ -123,6 +124,10 @@ def ingest_text(
     manifest.log_document(source, file_sha, len(chunks), parse_report=parse_quality)
     return {"chunks": len(chunks), "file_sha": file_sha, "warnings": warnings}
 
+def _no_text_error(suffix: str = "") -> str:
+    return f"No text extracted — scanned PDF? Enable OCR with: {OCR_INSTALL_CMD}. {suffix}".rstrip()
+
+
 def ingest_file(
     path: str,
     ocr: str = "auto",
@@ -142,11 +147,7 @@ def ingest_file(
     parsed = as_result(parse_file(path, ocr))
     quality = parsed.quality()
     if quality["total_chars"] == 0 and not allow_empty:
-        raise ValueError(
-            "No text extracted — scanned PDF? Enable OCR with: "
-            "brew install tesseract tesseract-lang && uv sync --group ocr. "
-            "Use --allow-empty to record the file in the manifest anyway."
-        )
+        raise ValueError(_no_text_error("Use --allow-empty to record the file in the manifest anyway."))
     content = Path(path).read_bytes()
     result = ingest_text(
         path, content, parsed.effective_text,

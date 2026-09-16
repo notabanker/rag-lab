@@ -34,8 +34,7 @@ def test_rrf_empty_inputs():
     assert lexical.rrf_fuse({"vector": [], "lexical": []}) == []
 
 
-def _setup_store(tmp_path, docs: dict[str, str]):
-    vector_store.init_store(str(tmp_path / "db"))
+def _setup_store(store, docs: dict[str, str]):
     lexical.invalidate()
     chunks = [Chunk(text=t, start=0, end=len(t)) for t in docs.values()]
     ids = list(docs.keys())
@@ -45,8 +44,8 @@ def _setup_store(tmp_path, docs: dict[str, str]):
     vector_store.upsert(chunks, vecs, metas, ids)
 
 
-def test_bm25_exact_code_ranks_first(tmp_path):
-    _setup_store(tmp_path, {
+def test_bm25_exact_code_ranks_first(store):
+    _setup_store(store, {
         "c1": "Das Modul DLBXYZ99 behandelt Zahlungsverkehr und Banken.",
         "c2": "Monte Carlo simulation uses random sampling for risk analysis.",
         "c3": "Banken und Versicherungen sind Finanzintermediäre.",
@@ -56,24 +55,22 @@ def test_bm25_exact_code_ranks_first(tmp_path):
     assert hits[0]["bm25_score"] > 0
 
 
-def test_bm25_cache_invalidation_on_upsert(tmp_path):
-    _setup_store(tmp_path, {"c1": "alpha beta gamma", "c3": "delta epsilon"})
+def test_bm25_cache_invalidation_on_upsert(store):
+    _setup_store(store, {"c1": "alpha beta gamma", "c3": "delta epsilon"})
     assert lexical.bm25_search("zeta") == []
     # add a new doc; the index must pick it up (invalidate hook + count change).
     # Three docs keep BM25 idf positive (a term in 1 of 2 docs scores exactly 0).
-    _setup_store(tmp_path, {"c1": "alpha beta gamma", "c2": "zeta eta theta", "c3": "delta epsilon"})
+    _setup_store(store, {"c1": "alpha beta gamma", "c2": "zeta eta theta", "c3": "delta epsilon"})
     hits = lexical.bm25_search("zeta")
     assert hits and hits[0]["id"] == "c2"
 
 
-def test_bm25_empty_collection(tmp_path):
-    vector_store.init_store(str(tmp_path / "db"))
+def test_bm25_empty_collection(store):
     lexical.invalidate()
     assert lexical.bm25_search("anything") == []
 
 
-def test_document_listing_and_delete(tmp_path):
-    vector_store.init_store(str(tmp_path / "db"))
+def test_document_listing_and_delete(store):
     lexical.invalidate()
     chunks = [
         Chunk(text="alpha beta gamma", start=0, end=16),

@@ -315,7 +315,7 @@ Every `rag query` and web query is logged to `<db-path>/runs.sqlite3`: question,
 uv run rag serve [--host 127.0.0.1] [--port 8000]
 ```
 
-`rag serve` starts the FastAPI backend on `http://127.0.0.1:8000`. It still serves a small built-in test console at `/`, but the main V3.1 UI is the React dashboard:
+`rag serve` starts the FastAPI backend on `http://127.0.0.1:8000`; the UI is the React dashboard:
 
 ```bash
 cd dashboard
@@ -684,9 +684,12 @@ rag-lab/
 ├── rag_lab/
 │   ├── __init__.py
 │   ├── config.py           # LLM configuration (env vars)
-│   ├── cli.py              # Typer CLI
+│   ├── cli.py              # Typer CLI: ingest/rebuild/sync/query/serve
+│   ├── cli_inspect.py      # CLI subcommands: runs/docs/collections/config
+│   ├── cli_eval.py         # CLI eval and compare commands
 │   ├── citations.py        # Citation extraction and validation
 │   ├── chunker.py          # Fixed and sentence-aware chunking
+│   ├── db.py               # Shared SQLite plumbing (runs DB schema/connect)
 │   ├── embedder.py         # SentenceTransformer wrapper (CPU)
 │   ├── gates.py            # Eval gate loading and evaluation
 │   ├── ingestion.py        # Shared ingest metadata/upsert flow
@@ -699,13 +702,18 @@ rag-lab/
 │   ├── verifier.py         # Grounding auditor (separate LLM call)
 │   ├── evaluation.py       # Eval harness: golden questions, metrics, variants
 │   ├── runs.py             # SQLite persistence for runs and eval results
-│   ├── web.py              # FastAPI web test console
+│   ├── web.py              # FastAPI API server for the dashboard
 │   └── parsers/
 │       ├── __init__.py     # Parser registry, pick_parser()
-│       ├── pdf.py          # pypdf text extraction
+│       ├── pdf.py          # pypdf text extraction (+ optional OCR)
 │       ├── epub.py         # ebooklib + BeautifulSoup
+│       ├── docx.py         # python-docx (headings, tables)
+│       ├── pptx.py         # python-pptx (slides + speaker notes)
+│       ├── ocr.py          # tesseract fallback for scanned PDFs
+│       ├── base.py         # ParseResult + quality report
 │       └── markdown.py     # markdown-it-py + frontmatter stripping
 └── tests/
+    ├── conftest.py         # Shared fixtures (isolated store, blank PDF)
     ├── test_chunker.py     # Chunker unit tests (offsets, guards, edge cases)
     ├── test_citations.py   # Citation validator
     ├── test_evaluation.py  # Metric math, question/variant loader validation

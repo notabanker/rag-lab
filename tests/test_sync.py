@@ -1,7 +1,7 @@
 
 import pytest
 
-from rag_lab import ingestion, manifest, vector_store
+from rag_lab import ingestion, manifest
 from rag_lab.sync import apply_plan, build_plan
 
 
@@ -16,10 +16,6 @@ def corpus(tmp_path):
     return d
 
 
-def _init(tmp_path):
-    vector_store.init_store(str(tmp_path / "db"))
-
-
 def test_build_plan_classifies(tmp_path, corpus):
     docs = []
     plan = build_plan([str(corpus)], docs)
@@ -28,8 +24,7 @@ def test_build_plan_classifies(tmp_path, corpus):
     assert plan.failed == []
 
 
-def test_apply_plan_ingests_added_and_skips_unchanged(tmp_path, corpus):
-    _init(tmp_path)
+def test_apply_plan_ingests_added_and_skips_unchanged(store, corpus):
     ingestion.ingest_file(str(corpus / "a.md"), ocr="off", chunk_size=256)
     docs = manifest.list_documents()
     plan = build_plan([str(corpus)], docs)
@@ -40,8 +35,7 @@ def test_apply_plan_ingests_added_and_skips_unchanged(tmp_path, corpus):
     assert len(manifest.list_documents()) == 2
 
 
-def test_apply_plan_reingests_changed_file(tmp_path, corpus):
-    _init(tmp_path)
+def test_apply_plan_reingests_changed_file(store, corpus):
     ingestion.ingest_file(str(corpus / "a.md"), ocr="off", chunk_size=256)
     (corpus / "a.md").write_text("# A\n\nCompletely rewritten content about LCR.")
     plan = build_plan([str(corpus)], manifest.list_documents())
@@ -52,8 +46,7 @@ def test_apply_plan_reingests_changed_file(tmp_path, corpus):
     assert len(shas) == 2  # alte sha ersetzt, keine Orphan-Chunks
 
 
-def test_apply_plan_prunes_missing_sources(tmp_path, corpus):
-    _init(tmp_path)
+def test_apply_plan_prunes_missing_sources(store, corpus):
     ingestion.ingest_file(str(corpus / "a.md"), ocr="off", chunk_size=256)
     ingestion.ingest_file(str(corpus / "sub" / "b.md"), ocr="off", chunk_size=256)
     (corpus / "a.md").unlink()
@@ -65,12 +58,11 @@ def test_apply_plan_prunes_missing_sources(tmp_path, corpus):
     assert remaining == {str(corpus / "sub" / "b.md")}
 
 
-def test_sync_cli_without_prune_keeps_missing_docs(tmp_path, corpus):
+def test_sync_cli_without_prune_keeps_missing_docs(store, corpus):
     """Binding constraint: --prune gates deletion — a plain `rag sync <dir>`
     never deletes indexed docs whose source file is gone (silent data loss)."""
     from rag_lab.cli import sync as cli_sync
 
-    _init(tmp_path)
     ingestion.ingest_file(str(corpus / "a.md"), ocr="off", chunk_size=256)
     (corpus / "a.md").unlink()
 
@@ -79,11 +71,10 @@ def test_sync_cli_without_prune_keeps_missing_docs(tmp_path, corpus):
     assert manifest.get_document(str(corpus / "a.md")) is not None  # nicht gelöscht
 
 
-def test_sync_cli_prune_declined_keeps_docs(tmp_path, corpus, monkeypatch):
+def test_sync_cli_prune_declined_keeps_docs(store, corpus, monkeypatch):
     """Declined prune confirmation keeps the docs — the prompt is the gate."""
     from rag_lab.cli import sync as cli_sync
 
-    _init(tmp_path)
     ingestion.ingest_file(str(corpus / "a.md"), ocr="off", chunk_size=256)
     (corpus / "a.md").unlink()
 
@@ -93,8 +84,7 @@ def test_sync_cli_prune_declined_keeps_docs(tmp_path, corpus, monkeypatch):
     assert manifest.get_document(str(corpus / "a.md")) is not None  # nicht gelöscht
 
 
-def test_apply_plan_dry_run_changes_nothing(tmp_path, corpus):
-    _init(tmp_path)
+def test_apply_plan_dry_run_changes_nothing(store, corpus):
     ingestion.ingest_file(str(corpus / "a.md"), ocr="off", chunk_size=256)
     plan = build_plan([str(corpus)], manifest.list_documents())
     counts = apply_plan(plan, dry_run=True, ocr="off", chunk_size=256)
@@ -107,9 +97,8 @@ def test_build_plan_rejects_missing_dir(tmp_path):
         build_plan([str(tmp_path / "nope")], [])
 
 
-def test_sync_survives_corrupt_file(tmp_path, corpus):
+def test_sync_survives_corrupt_file(store, corpus):
     """A corrupt file (bad pptx) must land in failed — not abort the sync."""
-    _init(tmp_path)
     (corpus / "broken.pptx").write_bytes(b"\x00\x01\x02 not a real pptx")
     plan = build_plan([str(corpus)], [])
     assert str(corpus / "broken.pptx") in plan.added

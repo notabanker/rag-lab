@@ -1,5 +1,5 @@
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from .config import EMBEDDING_MODEL, LLM_MODEL, RERANKER_MODEL
@@ -16,6 +16,7 @@ Rules:
 - Cite the provided context labels in square brackets, e.g. [source.pdf p.12].
 - If CONTEXT does not contain the answer, reply exactly: "I don't know from the provided documents."
 - Do not use outside knowledge."""
+
 
 @dataclass
 class RetrievalConfig:
@@ -35,31 +36,63 @@ class RetrievalConfig:
     def __post_init__(self):
         if self.mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}, got {self.mode!r}")
-        if self.top_k < 1 or self.rerank_top < 1 or self.parent_top_k < 1:
-            raise ValueError("top_k, rerank_top, and parent_top_k must be >= 1")
-        if self.max_context_chars < 1:
-            raise ValueError("max_context_chars must be >= 1")
+        if min(self.top_k, self.rerank_top, self.parent_top_k, self.max_context_chars) < 1:
+            raise ValueError("top_k, rerank_top, parent_top_k, and max_context_chars must be >= 1")
+
+    def clamped(self) -> "RetrievalConfig":
+        """Copy with all params clamped to the API/MCP safety bounds."""
+        return replace(
+            self,
+            top_k=min(max(self.top_k, 1), 200),
+            rerank_top=min(max(self.rerank_top, 1), 50),
+            parent_top_k=min(max(self.parent_top_k, 1), 50),
+            max_context_chars=min(max(self.max_context_chars, 1), 100000),
+        )
+
+
+def coerce_score(v) -> float | None:
+    """Coerce verifier scores that arrive as strings; None if not numeric."""
+    if isinstance(v, bool) or v is None:
+        return None
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        return None
+
+
+def compact_chunk(chunk: dict, include_text: bool = True, text_cap: int = None) -> dict:
+    """Reduce an internal chunk dict to the wire format shared by API and MCP."""
+    meta = chunk.get("metadata") or {}
+    out = {
+        "id": chunk.get("id"),
+        "citation": chunk.get("citation") or meta.get("citation"),
+        "source": meta.get("source"),
+        "distance": chunk.get("distance"),
+        "rerank_score": chunk.get("rerank_score"),
+        "rrf_score": chunk.get("rrf_score"),
+    }
+    if include_text:
+        text = chunk.get("text") or ""
+        out["text"] = text[:text_cap] if text_cap else text
+    return out
+
 
 def retrieve_hits(question: str, cfg: RetrievalConfig) -> list[dict]:
     """Full pre-LLM pipeline: fetch by mode, fuse, rerank. Returns the ordered
     candidate list (up to top_k); callers slice to rerank_top for the LLM."""
-    vector_hits = []
-    lexical_hits = []
+    hit_lists = {"vector": [], "lexical": []}
     if cfg.mode in ("vector", "hybrid"):
-        q_vec = embedder.embed_query(question)
-        vector_hits = vector_store.query(q_vec, top_k=cfg.top_k)
+        hit_lists["vector"] = vector_store.query(embedder.embed_query(question), top_k=cfg.top_k)
     if cfg.mode in ("lexical", "hybrid"):
-        lexical_hits = lexical.bm25_search(question, top_k=cfg.top_k)
-    if cfg.mode == "vector":
-        hits = vector_hits
-    elif cfg.mode == "lexical":
-        hits = lexical_hits
-    else:
-        hits = lexical.rrf_fuse({"vector": vector_hits, "lexical": lexical_hits}, limit=cfg.top_k)
+        hit_lists["lexical"] = lexical.bm25_search(question, top_k=cfg.top_k)
+    hits = hit_lists[cfg.mode] if cfg.mode in ("vector", "lexical") else lexical.rrf_fuse(
+        {"vector": hit_lists["vector"], "lexical": hit_lists["lexical"]}, limit=cfg.top_k
+    )
     if cfg.use_reranker and hits:
         from . import reranker
         hits = reranker.rerank(question, hits)
     return hits
+
 
 def _citation_label(chunk: dict) -> str:
     meta = chunk.get("metadata") or {}
@@ -70,18 +103,13 @@ def _citation_label(chunk: dict) -> str:
         return f"{source} chunk {int(meta['chunk_idx']) + 1}"
     return chunk.get("id") or source
 
+
 def _expand_parent(hit: dict) -> dict:
     meta = hit.get("metadata") or {}
     parent_id = meta.get("parent_id")
-    if not parent_id:
-        expanded = {**hit}
-        expanded["citation"] = _citation_label(hit)
-        return expanded
-    siblings = vector_store.get_by_parent_id(parent_id)
+    siblings = vector_store.get_by_parent_id(parent_id) if parent_id else []
     if not siblings:
-        expanded = {**hit}
-        expanded["citation"] = _citation_label(hit)
-        return expanded
+        return {**hit, "citation": _citation_label(hit)}
     text = "\n\n".join(s["text"] for s in siblings)
     first = siblings[0]
     parent = {
@@ -100,12 +128,12 @@ def _expand_parent(hit: dict) -> dict:
     }
     # Label the parent by its OWN group index, not the first sibling's chunk
     # index — sibling labeling made a parent of chunks 4-7 cite as "chunk 5".
-    parent_idx = meta.get("parent_idx")
-    if parent_idx is not None:
-        parent["citation"] = f"{Path(meta.get('source') or 'unknown').name} §parent {int(parent_idx) + 1}"
+    if meta.get("parent_idx") is not None:
+        parent["citation"] = f"{Path(meta.get('source') or 'unknown').name} §parent {int(meta['parent_idx']) + 1}"
     else:
         parent["citation"] = _citation_label(parent)
     return parent
+
 
 def _apply_context_budget(chunks: list[dict], max_chars: int) -> list[dict]:
     out = []
@@ -120,6 +148,7 @@ def _apply_context_budget(chunks: list[dict], max_chars: int) -> list[dict]:
         out.append(chunk)
         used += len(text)
     return out
+
 
 def select_context_chunks(hits: list[dict], cfg: RetrievalConfig) -> list[dict]:
     selected = hits[:cfg.rerank_top]
@@ -139,11 +168,11 @@ def select_context_chunks(hits: list[dict], cfg: RetrievalConfig) -> list[dict]:
         selected = [{**h, "citation": _citation_label(h)} for h in selected]
     return _apply_context_budget(selected, cfg.max_context_chars)
 
+
 def _generate(prompt: str, model: str = None, max_tokens: int = 600) -> tuple[str, dict]:
     """Returns (content, usage). Raises RuntimeError on failure — caller degrades."""
-    model = model or LLM_MODEL
-    payload = {
-        "model": model,
+    body = llm.chat({
+        "model": model or LLM_MODEL,
         "messages": [
             {"role": "system", "content": GENERATOR_SYSTEM},
             {"role": "user", "content": prompt},
@@ -151,16 +180,12 @@ def _generate(prompt: str, model: str = None, max_tokens: int = 600) -> tuple[st
         "max_tokens": max_tokens,
         "temperature": 0.2,
         "stream": False,
-    }
-    body = llm.chat(payload, purpose="generator")
-    content = (body.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+    }, purpose="generator")
+    content = llm.content_of(body)
     if not content:
         raise RuntimeError("LLM returned empty response (model may be overloaded)")
-    usage = body.get("usage") or {}
-    return content, {
-        "prompt_tokens": usage.get("prompt_tokens", 0),
-        "completion_tokens": usage.get("completion_tokens", 0),
-    }
+    return content, llm.usage_of(body)
+
 
 def _format_context(chunks: list[dict]) -> str:
     parts = []
@@ -169,23 +194,21 @@ def _format_context(chunks: list[dict]) -> str:
         parts.append(f'<document source="{label}">\n{c["text"]}\n</document>')
     return "\n\n".join(parts)
 
+
 def _refine_query(question: str, issues: list[str]) -> str:
-    """Simple refinement: append the issues as additional constraint."""
     if not issues:
         return question
     return f"{question}\n\n(Previous attempt was weak because: {'; '.join(issues[:3])}. Be more specific.)"
+
 
 def _add_usage(total: dict, part: dict | None):
     if part:
         total["prompt_tokens"] += part.get("prompt_tokens", 0) or 0
         total["completion_tokens"] += part.get("completion_tokens", 0) or 0
 
-def _result_with_citations(result: dict) -> dict:
-    result["citation_validation"] = citations.validate(result.get("answer", ""), result.get("chunks", []))
-    return result
 
 def retrieve(question: str, cfg: RetrievalConfig = None, log: bool = True) -> dict:
-    """The /goal retrieval loop. Returns answer + full trace, and logs the run."""
+    """The retrieval loop. Returns answer + full trace, and logs the run."""
     cfg = cfg or RetrievalConfig()
     start = time.perf_counter()
     result = _retrieve(question, cfg)
@@ -205,80 +228,65 @@ def retrieve(question: str, cfg: RetrievalConfig = None, log: bool = True) -> di
             result["log_error"] = f"run logging failed: {e}"
     return result
 
+
+def _result(answer, chunks, verdict, iterations, trace, usage, **extra) -> dict:
+    out = {
+        "answer": answer, "chunks": chunks, "verifier": verdict,
+        "iterations": iterations, "trace": trace, "usage": usage,
+    }
+    out.update({k: v for k, v in extra.items() if v is not None})
+    out["citation_validation"] = citations.validate(out["answer"], out["chunks"])
+    return out
+
+
+def _empty_verdict(**overrides) -> dict:
+    return {"score": 0, "grounded": False, "issues": [], "verdict": "UNGROUNDED", **overrides}
+
+
 def _retrieve(question: str, cfg: RetrievalConfig) -> dict:
     trace = []
     current_q = question
     answer = ""
-    verdict = {"score": 0, "grounded": False, "issues": [], "verdict": "UNGROUNDED"}
+    verdict = _empty_verdict()
     chunks = []
     usage = {"prompt_tokens": 0, "completion_tokens": 0}
 
     if cfg.max_iters < 1:
-        return {
-            "answer": "max_iters must be >= 1",
-            "chunks": [], "verifier": verdict,
-            "iterations": 0, "trace": trace, "usage": usage,
-        }
+        return _result("max_iters must be >= 1", [], verdict, 0, trace, usage)
 
     if cfg.keyword:
         chunks = vector_store.keyword_search(cfg.keyword, limit=cfg.top_k)
         if not chunks:
-            return {
-                "answer": f"No chunks matched keyword: {cfg.keyword}",
-                "chunks": [], "verifier": verdict,
-                "iterations": 0, "trace": trace, "usage": usage,
-            }
+            return _result(f"No chunks matched keyword: {cfg.keyword}", [], verdict, 0, trace, usage)
         # No relevance ranking in keyword mode: every match (up to the context
         # budget) goes to the LLM — exhaustive, not capped at rerank_top.
         chunks = _apply_context_budget(chunks, cfg.max_context_chars)
-        context = _format_context(chunks)
         try:
-            answer, u = _generate(f"CONTEXT:\n{context}\n\nQUESTION: {current_q}\n\nANSWER:", model=cfg.model, max_tokens=cfg.max_tokens)
+            answer, u = _generate(f"CONTEXT:\n{_format_context(chunks)}\n\nQUESTION: {current_q}\n\nANSWER:", model=cfg.model, max_tokens=cfg.max_tokens)
             _add_usage(usage, u)
         except RuntimeError as e:
-            return {"answer": f"LLM error: {e}", "chunks": chunks, "verifier": verdict, "iterations": 1, "trace": trace, "usage": usage}
+            return _result(f"LLM error: {e}", chunks, verdict, 1, trace, usage)
         verdict = verify(question, answer, chunks, model=cfg.model, chunk_cap=cfg.max_context_chars)
         _add_usage(usage, verdict.pop("_usage", None))
-        return _result_with_citations({
-            "answer": answer, "chunks": chunks, "verifier": verdict,
-            "iterations": 1, "trace": trace, "usage": usage,
-        })
+        return _result(answer, chunks, verdict, 1, trace, usage)
 
     for i in range(cfg.max_iters):
         hits = retrieve_hits(current_q, cfg)
         chunks = select_context_chunks(hits, cfg)
         if not chunks:
-            return {
-                "answer": "I don't know from the provided documents (no chunks retrieved).",
-                "chunks": [],
-                "verifier": {"score": 0, "grounded": False, "issues": ["empty retrieval"], "verdict": "UNGROUNDED"},
-                "iterations": i + 1,
-                "trace": trace, "usage": usage,
-            }
-        context = _format_context(chunks)
-        prompt = f"CONTEXT:\n{context}\n\nQUESTION: {current_q}\n\nANSWER:"
+            return _result(
+                "I don't know from the provided documents (no chunks retrieved).",
+                [], _empty_verdict(issues=["empty retrieval"]), i + 1, trace, usage,
+            )
         try:
-            answer, u = _generate(prompt, model=cfg.model, max_tokens=cfg.max_tokens)
+            answer, u = _generate(f"CONTEXT:\n{_format_context(chunks)}\n\nQUESTION: {current_q}\n\nANSWER:", model=cfg.model, max_tokens=cfg.max_tokens)
             _add_usage(usage, u)
         except RuntimeError as e:
-            trace.append({
-                "iter": i + 1, "query": current_q, "answer": str(e),
-                "verifier_score": 0, "issues": [str(e)],
-            })
-            return {
-                "answer": f"LLM generation error: {e}",
-                "chunks": chunks, "verifier": verdict,
-                "iterations": i + 1, "trace": trace, "partial": True, "usage": usage,
-            }
+            trace.append({"iter": i + 1, "query": current_q, "answer": str(e), "verifier_score": 0, "issues": [str(e)]})
+            return _result(f"LLM generation error: {e}", chunks, verdict, i + 1, trace, usage, partial=True)
         verdict = verify(question, answer, chunks, model=cfg.model, chunk_cap=cfg.max_context_chars)
         _add_usage(usage, verdict.pop("_usage", None))
-        score = verdict.get("score", 0)
-        if not isinstance(score, (int, float)):
-            # String scores ("8.5") are valid verifier output; int() mangles them.
-            try:
-                score = float(score)
-            except (TypeError, ValueError):
-                score = 0.0
+        score = coerce_score(verdict.get("score")) or 0.0
         trace.append({
             "iter": i + 1, "query": current_q, "answer": answer,
             "verifier_score": score, "issues": verdict.get("issues", []),
@@ -290,32 +298,20 @@ def _retrieve(question: str, cfg: RetrievalConfig) -> dict:
         # score is high; an ERROR verdict ships nothing authoritative.
         if verdict.get("verdict") == "UNGROUNDED":
             trace[-1]["withheld"] = True
-            return _result_with_citations({
-                "answer": "I don't know from the provided documents.",
-                "chunks": chunks, "verifier": verdict,
-                "iterations": i + 1, "trace": trace, "partial": True, "usage": usage,
-            })
+            return _result("I don't know from the provided documents.", chunks, verdict, i + 1, trace, usage, partial=True)
         if verdict.get("verdict") == "ERROR":
-            return _result_with_citations({
-                "answer": answer, "chunks": chunks, "verifier": verdict,
-                "iterations": i + 1, "trace": trace, "unverified": True, "usage": usage,
-            })
+            return _result(answer, chunks, verdict, i + 1, trace, usage, unverified=True)
         if score >= cfg.min_score:
-            return _result_with_citations({
-                "answer": answer, "chunks": chunks, "verifier": verdict,
-                "iterations": i + 1, "trace": trace, "usage": usage,
-            })
+            return _result(answer, chunks, verdict, i + 1, trace, usage)
         current_q = _refine_query(current_q, verdict.get("issues", []))
 
     # Loop exhausted: withhold a final ungrounded answer instead of shipping it.
-    result = {
-        "answer": answer, "chunks": chunks, "verifier": verdict,
-        "iterations": cfg.max_iters, "trace": trace, "partial": True, "usage": usage,
-    }
-    if verdict.get("verdict") == "UNGROUNDED":
-        result["answer"] = "I don't know from the provided documents."
+    withheld = verdict.get("verdict") == "UNGROUNDED"
+    if withheld:
+        answer = "I don't know from the provided documents."
         if trace:
             trace[-1]["withheld"] = True
-    elif verdict.get("verdict") == "ERROR":
-        result["unverified"] = True
-    return _result_with_citations(result)
+    return _result(
+        answer, chunks, verdict, cfg.max_iters, trace, usage,
+        partial=True, unverified=True if verdict.get("verdict") == "ERROR" else None,
+    )

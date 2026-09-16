@@ -45,8 +45,7 @@ def test_mcp_answer_returns_validation(monkeypatch):
 def test_mcp_ingest_uses_shared_ingestion(tmp_path, monkeypatch):
     f = tmp_path / "note.md"
     f.write_text("# Note\n\nHello")
-    monkeypatch.setattr(mcp_server, "pick_parser", lambda path: lambda p: "Hello")
-    monkeypatch.setattr(mcp_server.ingestion, "ingest_text", lambda source, content, text, **kwargs: {
+    monkeypatch.setattr(mcp_server.ingestion, "ingest_file", lambda path, **kwargs: {
         "chunks": 1,
         "file_sha": "abc",
     })
@@ -57,9 +56,7 @@ def test_mcp_ingest_uses_shared_ingestion(tmp_path, monkeypatch):
 
 
 def test_mcp_reingest_uses_manifest_source(monkeypatch):
-    from rag_lab import manifest
-
-    monkeypatch.setattr(manifest, "get_document", lambda identifier: {"source": "note.md"})
+    monkeypatch.setattr(mcp_server.vector_store, "document_source", lambda identifier: "note.md")
     monkeypatch.setattr(mcp_server, "rag_ingest", lambda path, **kwargs: {
         "status": "ok",
         "source": path,
@@ -72,23 +69,9 @@ def test_mcp_reingest_uses_manifest_source(monkeypatch):
     assert result["source"] == "note.md"
 
 
-def test_mcp_reingest_falls_back_to_indexed_source(monkeypatch):
-    from rag_lab import manifest
-
-    monkeypatch.setattr(manifest, "get_document", lambda identifier: None)
-    monkeypatch.setattr(mcp_server.vector_store, "list_documents", lambda: [{
-        "doc_id": "doc",
-        "file_sha": "doc",
-        "source": "indexed.md",
-        "basename": "indexed.md",
-    }])
-    monkeypatch.setattr(mcp_server, "rag_ingest", lambda path, **kwargs: {
-        "status": "ok",
-        "source": path,
-        "chunks": 1,
-    })
+def test_mcp_reingest_not_found(monkeypatch):
+    monkeypatch.setattr(mcp_server.vector_store, "document_source", lambda identifier: None)
 
     result = mcp_server.rag_reingest("doc")
 
-    assert result["status"] == "ok"
-    assert result["source"] == "indexed.md"
+    assert result["status"] == "not_found"

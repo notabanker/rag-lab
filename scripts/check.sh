@@ -4,8 +4,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-echo "== pytest =="
+echo "== pytest (fast) =="
 uv run pytest -q
+
+echo
+echo "== pytest (slow: real embedder + reranker) =="
+uv run pytest -q -m slow
 
 echo
 echo "== ruff (E9/F: real bugs only) =="

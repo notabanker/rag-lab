@@ -3,23 +3,41 @@ import logging
 import tempfile
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .parsers import PARSERS, as_result, pick_parser
 from . import ingestion, runs, vector_store
 from .config import (
     DEFAULT_COLLECTION, EMBEDDING_MODEL, LLM_BASE_URL, LLM_MODEL,
     LLM_VERIFIER_MODEL, MAX_INGEST_CHUNKS, MAX_UPLOAD_BYTES, RERANKER_MODEL,
     get_api_key, get_api_token,
 )
-from .retriever import RetrievalConfig, retrieve
+from .parsers import PARSERS, as_result, pick_parser
+from .retriever import RetrievalConfig, compact_chunk, retrieve
 
 log = logging.getLogger("rag_lab.web")
 
+# Host-header allowlist for no-token (loopback) mode. Browsers can be aimed
+# at a loopback port via DNS rebinding (attacker.com -> 127.0.0.1); without
+# this check a remote page could hit /api/query, /api/ingest, etc. same-origin.
+# Token mode is exempt: the bearer gate is the real protection there and the
+# server may legitimately be reached via a LAN hostname.
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "[::1]", "::1"}
+
 app = FastAPI(title="rag-lab test console")
+
+
+@app.middleware("http")
+async def validate_host_header(request: Request, call_next):
+    if not get_api_token():
+        host = (request.headers.get("host") or "").strip().lower()
+        hostname = host.rsplit(":", 1)[0] if not host.startswith("[") else host.split("]")[0] + "]"
+        if hostname not in _LOOPBACK_HOSTS:
+            log.warning("rejected request with Host %r (possible DNS rebinding)", host)
+            return JSONResponse(status_code=403, content={"detail": "Host header not allowed"})
+    return await call_next(request)
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,491 +60,6 @@ def require_api_token(authorization: str | None = Header(default=None)):
 
 API_DEPENDENCIES = [Depends(require_api_token)]
 
-PAGE = """<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>RAG Lab</title>
-<style>
-  :root {
-    --bg: #000;
-    --surface: #1c1c1e;
-    --surface-2: #2c2c2e;
-    --sep: #38383a;
-    --text: #f5f5f7;
-    --text-2: rgba(255,255,255,0.5);
-    --text-3: rgba(255,255,255,0.35);
-    --accent: #0a84ff;
-    --green: #30d158;
-    --yellow: #ffd60a;
-    --red: #ff453a;
-    --ease: cubic-bezier(0.25, 0.1, 0.25, 1.0);
-    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
-  }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: var(--sans); -webkit-font-smoothing: antialiased; }
-  body { min-height: 100dvh; padding: 32px 16px 80px; }
-  main { max-width: 780px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
-  h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 12px; }
-  .section-title { font-size: 12px; text-transform: uppercase; color: var(--text-2); letter-spacing: 0.5px; margin: 0 0 10px; font-weight: 600; }
-
-  .card {
-    background: var(--surface);
-    border-radius: 16px;
-    padding: 16px 20px;
-    transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease);
-  }
-  .card:hover { transform: scale(1.002); box-shadow: 0 8px 24px rgba(0,0,0,0.35); }
-
-  /* Stats */
-  .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-  .stat { display: flex; flex-direction: column; gap: 4px; }
-  .stat-value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .stat-label { font-size: 12px; color: var(--text-2); }
-  .empty-stats { color: var(--text-2); font-size: 14px; }
-
-  /* Inputs */
-  .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
-  .field label { font-size: 12px; color: var(--text-2); }
-  select {
-    width: 100%;
-    background: var(--surface-2);
-    color: var(--text);
-    border: none;
-    border-radius: 8px;
-    padding: 8px 10px;
-    font: inherit;
-    outline: none;
-  }
-  input[type="text"], input[type="number"], textarea {
-    width: 100%;
-    background: transparent;
-    color: var(--text);
-    border: none;
-    border-bottom: 0.5px solid var(--sep);
-    border-radius: 10px 10px 0 0;
-    padding: 8px 2px;
-    font: inherit;
-    outline: none;
-    transition: border-color 0.25s var(--ease);
-  }
-  textarea { resize: vertical; min-height: 72px; font-family: var(--sans); }
-  input:focus, textarea:focus { border-bottom-color: var(--accent); }
-  input[type="number"] { -moz-appearance: textfield; }
-  input[type="number"]::-webkit-outer-spin-button,
-  input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-
-  /* Number stepper */
-  .num { position: relative; }
-  .num .steppers { position: absolute; right: 0; top: 50%; transform: translateY(-50%); display: none; gap: 2px; }
-  .num:hover .steppers, .num:focus-within .steppers { display: flex; }
-  .num .steppers button {
-    width: 22px; height: 22px; border-radius: 6px; border: none;
-    background: var(--surface-2); color: var(--text); cursor: pointer; font-size: 14px; line-height: 1;
-    transition: transform 0.15s var(--ease), background 0.15s var(--ease);
-  }
-  .num .steppers button:hover { background: #3a3a3c; }
-  .num .steppers button:active { transform: scale(0.92); }
-
-  /* Param row */
-  .param-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-  @media (max-width: 600px) { .param-row { grid-template-columns: 1fr; } }
-
-  /* Buttons */
-  button.btn {
-    appearance: none; border: none; cursor: pointer; font: inherit; font-weight: 600;
-    border-radius: 12px; padding: 11px 18px; font-size: 14px;
-    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-    transition: transform 0.15s var(--ease), background 0.2s var(--ease), opacity 0.2s var(--ease);
-  }
-  button.btn.sm { border-radius: 8px; padding: 7px 12px; font-size: 13px; }
-  button.btn.primary { background: var(--accent); color: #fff; }
-  button.btn.primary:hover { background: #1a8fff; }
-  button.btn.secondary { background: rgba(255,255,255,0.1); color: var(--text); }
-  button.btn.secondary:hover { background: rgba(255,255,255,0.14); }
-  button.btn:active { transform: scale(0.97); }
-  button.btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
-  button.btn:focus-visible, input:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
-    outline: 2px solid var(--accent); outline-offset: 2px;
-  }
-
-  /* Drop zone */
-  .dropzone {
-    height: 120px; border: 1.5px dashed var(--sep); border-radius: 12px;
-    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
-    color: var(--text-2); cursor: pointer; transition: border-color 0.2s var(--ease), background 0.2s var(--ease);
-    text-align: center; padding: 8px;
-  }
-  .dropzone:hover, .dropzone.drag { border-color: var(--accent); background: rgba(10,132,255,0.06); color: var(--text); }
-  .dropzone svg { width: 28px; height: 28px; opacity: 0.7; }
-  .dropzone .fname { color: var(--text); font-size: 13px; }
-  .dz-actions { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
-
-  /* Spinner */
-  .spinner {
-    width: 14px; height: 14px; border-radius: 50%;
-    border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff;
-    animation: spin 0.6s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  /* Badges */
-  .badge {
-    display: inline-flex; align-items: center; border-radius: 20px; padding: 4px 8px;
-    font-size: 11px; font-weight: 600; line-height: 1;
-  }
-  .badge.mono { font-family: var(--mono); font-weight: 500; background: rgba(255,255,255,0.08); color: var(--text); }
-  .badge.score-high { background: rgba(48,209,88,0.15); color: var(--green); }
-  .badge.score-mid  { background: rgba(255,214,10,0.15); color: var(--yellow); }
-  .badge.score-low  { background: rgba(255,69,58,0.15); color: var(--red); }
-
-  /* Answer */
-  .answer { animation: rise 0.3s var(--ease) both; }
-  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-  .answer-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
-  .answer-text { font-size: 15px; line-height: 1.55; white-space: pre-wrap; }
-  .chunks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-  .trace-list { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
-  details.trace { background: var(--surface-2); border-radius: 10px; overflow: hidden; }
-  details.trace summary {
-    list-style: none; cursor: pointer; padding: 10px 12px;
-    display: flex; align-items: center; gap: 10px; font-size: 13px;
-  }
-  details.trace summary::-webkit-details-marker { display: none; }
-  details.trace .body {
-    max-height: 0; overflow: hidden; transition: max-height 0.25s var(--ease);
-  }
-  details.trace[open] .body { max-height: 600px; }
-  details.trace pre {
-    margin: 0; padding: 0 12px 12px; font-family: var(--mono); font-size: 12px;
-    color: var(--text); white-space: pre-wrap; word-break: break-word; max-height: 380px; overflow: auto;
-  }
-
-  /* Toast */
-  #toast {
-    position: fixed; top: 16px; left: 50%; transform: translate(-50%, -150%);
-    background: rgba(40,40,42,0.7); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
-    color: var(--text); padding: 10px 16px; border-radius: 12px; font-size: 13px;
-    transition: transform 0.35s var(--ease); z-index: 100;
-    border: 0.5px solid rgba(255,255,255,0.1);
-  }
-  #toast.show { transform: translate(-50%, 0); }
-
-  /* Net banner */
-  #net-banner {
-    position: sticky; top: 0; background: rgba(255,69,58,0.15); color: var(--red);
-    padding: 10px 14px; border-radius: 10px; font-size: 13px; margin-bottom: 12px;
-    border: 0.5px solid rgba(255,69,58,0.3); display: none;
-  }
-  #net-banner.show { display: block; }
-
-  .inline-error { color: var(--red); font-size: 13px; margin-top: 8px; min-height: 0; }
-  .muted { color: var(--text-2); font-size: 13px; }
-</style>
-</head>
-<body>
-  <div id="toast" role="status" aria-live="polite"></div>
-  <main>
-    <div id="net-banner" role="alert">Network connection lost. The backend is unreachable.</div>
-    <h1>RAG Lab</h1>
-
-    <section class="card" aria-labelledby="stats-title">
-      <div class="section-title" id="stats-title">Collection</div>
-      <div id="stats-body">
-        <div class="empty-stats">Loading…</div>
-      </div>
-    </section>
-
-    <section class="card" aria-labelledby="ingest-title">
-      <div class="section-title" id="ingest-title">Ingest</div>
-      <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Drop a file here or press Enter to browse">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-          <path d="M7 18a4 4 0 0 1-.6-7.96A6 6 0 0 1 18 9.5a4.5 4.5 0 0 1-.5 8.5"/>
-          <path d="M12 12v8"/>
-          <path d="M9 15l3-3 3 3"/>
-        </svg>
-        <div id="dz-label">Drop file or click to browse</div>
-      </div>
-      <input id="file-input" type="file" hidden />
-      <div class="dz-actions">
-        <button class="btn secondary sm" id="dz-clear" type="button" disabled>Clear</button>
-        <button class="btn primary sm" id="ingest-btn" type="button" disabled>Ingest</button>
-      </div>
-      <div class="inline-error" id="ingest-error" role="alert"></div>
-    </section>
-
-    <section class="card" aria-labelledby="query-title">
-      <div class="section-title" id="query-title">Query</div>
-      <div class="field">
-        <label for="q">Question</label>
-        <textarea id="q" placeholder="Ask anything about your documents…"></textarea>
-      </div>
-      <div class="param-row">
-        <div class="field num">
-          <label for="topk">Child candidates</label>
-          <input id="topk" type="number" min="1" max="50" step="1" value="5" />
-          <div class="steppers" aria-hidden="true">
-            <button type="button" data-step="-1" tabindex="-1">−</button>
-            <button type="button" data-step="1" tabindex="-1">+</button>
-          </div>
-        </div>
-        <div class="field">
-          <label for="mode">Retrieval mode</label>
-          <select id="mode">
-            <option value="hybrid" selected>Hybrid (vector + BM25 + rerank)</option>
-            <option value="vector">Vector only</option>
-            <option value="lexical">Lexical (BM25) only</option>
-          </select>
-        </div>
-      </div>
-      <div class="dz-actions">
-        <button class="btn primary" id="ask-btn" type="button">Ask</button>
-      </div>
-      <div class="inline-error" id="query-error" role="alert"></div>
-    </section>
-
-    <section class="card" id="answer-card" aria-labelledby="answer-title" hidden>
-      <div class="section-title" id="answer-title">Answer</div>
-      <div id="answer-body"></div>
-    </section>
-  </main>
-
-<script>
-(() => {
-  const $ = (s) => document.querySelector(s);
-  const toast = $("#toast");
-  const banner = $("#net-banner");
-
-  function showToast(msg) {
-    toast.textContent = msg;
-    toast.classList.add("show");
-    clearTimeout(showToast._t);
-    showToast._t = setTimeout(() => toast.classList.remove("show"), 3000);
-  }
-  function netError(on) { banner.classList.toggle("show", !!on); }
-
-  async function api(path, opts = {}) {
-    try {
-      const res = await fetch(path, opts);
-      netError(false);
-      if (!res.ok) {
-        let msg = res.status + " " + res.statusText;
-        try {
-          const body = await res.json();
-          if (body && body.detail) msg = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail);
-        } catch (_) {}
-        throw new Error(msg);
-      }
-      const ct = res.headers.get("content-type") || "";
-      return ct.includes("json") ? res.json() : res.text();
-    } catch (e) {
-      if (e instanceof TypeError) netError(true);
-      throw e;
-    }
-  }
-
-  function scoreClass(s) {
-    if (s == null) return "score-mid";
-    if (s >= 0.75) return "score-high";
-    if (s >= 0.4) return "score-mid";
-    return "score-low";
-  }
-  function verdictText(s) {
-    if (s == null) return "Result";
-    if (s >= 0.75) return "Strong match";
-    if (s >= 0.4) return "Partial match";
-    return "Weak match";
-  }
-  function fmtScore(s) { return s == null ? "—" : Number(s).toFixed(2); }
-
-  // ----- Stats -----
-  async function loadStats() {
-    const body = $("#stats-body");
-    try {
-      const s = await api("/api/stats");
-      const docs = s.documents ?? s.docs ?? 0;
-      const chunks = s.chunks ?? s.chunk_count ?? 0;
-      const status = s.status ?? (chunks ? "ready" : "empty");
-      if (!docs && !chunks) {
-        body.innerHTML = '<div class="empty-stats">No documents ingested yet</div>';
-        return;
-      }
-      body.innerHTML = `
-        <div class="stats-grid">
-          <div class="stat"><div class="stat-value">${docs}</div><div class="stat-label">Documents</div></div>
-          <div class="stat"><div class="stat-value">${chunks}</div><div class="stat-label">Chunks</div></div>
-          <div class="stat"><div class="stat-value" style="font-size:14px;text-transform:capitalize;padding-top:8px">${status}</div><div class="stat-label">Status</div></div>
-        </div>`;
-    } catch (e) {
-      body.innerHTML = '<div class="empty-stats">Unable to load stats</div>';
-    }
-  }
-
-  // ----- Ingest -----
-  const dz = $("#dropzone");
-  const fi = $("#file-input");
-  const dzLabel = $("#dz-label");
-  const ingestBtn = $("#ingest-btn");
-  const clearBtn = $("#dz-clear");
-  const ingestErr = $("#ingest-error");
-  let pendingFile = null;
-
-  function setFile(f) {
-    pendingFile = f || null;
-    if (f) {
-      dzLabel.innerHTML = `<span class="fname">${f.name}</span><div class="muted" style="font-size:12px;margin-top:2px">${(f.size/1024).toFixed(1)} KB</div>`;
-      ingestBtn.disabled = false; clearBtn.disabled = false;
-    } else {
-      dzLabel.textContent = "Drop file or click to browse";
-      ingestBtn.disabled = true; clearBtn.disabled = true;
-      fi.value = "";
-    }
-  }
-
-  dz.addEventListener("click", () => fi.click());
-  dz.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fi.click(); }
-  });
-  fi.addEventListener("change", () => setFile(fi.files[0]));
-  ["dragenter","dragover"].forEach(ev => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.add("drag"); }));
-  ["dragleave","drop"].forEach(ev => dz.addEventListener(ev, (e) => { e.preventDefault(); dz.classList.remove("drag"); }));
-  dz.addEventListener("drop", (e) => { if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); });
-  clearBtn.addEventListener("click", () => { setFile(null); ingestErr.textContent = ""; });
-
-  ingestBtn.addEventListener("click", async () => {
-    if (!pendingFile) return;
-    ingestErr.textContent = "";
-    ingestBtn.disabled = true;
-    const orig = ingestBtn.innerHTML;
-    ingestBtn.innerHTML = '<span class="spinner"></span> Ingesting…';
-    try {
-      const fd = new FormData();
-      fd.append("file", pendingFile);
-      await api("/api/ingest", { method: "POST", body: fd });
-      showToast("Ingested " + pendingFile.name);
-      setFile(null);
-      loadStats();
-    } catch (e) {
-      ingestErr.textContent = "Ingest failed: " + e.message;
-      setFile(null);
-    } finally {
-      ingestBtn.innerHTML = orig;
-      ingestBtn.disabled = !pendingFile;
-    }
-  });
-
-  // ----- Number steppers -----
-  document.querySelectorAll(".num").forEach(wrap => {
-    const input = wrap.querySelector("input[type=number]");
-    wrap.querySelectorAll(".steppers button").forEach(b => {
-      b.addEventListener("click", () => {
-        const step = parseFloat(b.dataset.step);
-        const val = parseFloat(input.value || "0") + step;
-        const min = input.min !== "" ? parseFloat(input.min) : -Infinity;
-        const max = input.max !== "" ? parseFloat(input.max) : Infinity;
-        const clamped = Math.min(max, Math.max(min, val));
-        input.value = step % 1 === 0 ? Math.round(clamped) : clamped.toFixed(1);
-      });
-    });
-  });
-
-  // ----- Query -----
-  const askBtn = $("#ask-btn");
-  const qErr = $("#query-error");
-  const answerCard = $("#answer-card");
-  const answerBody = $("#answer-body");
-
-  function renderAnswer(r) {
-    // Normalize backend response: { answer, verifier:{score,verdict,...}, trace:[...], iterations, partial }
-    const rawScore = (r.verifier && typeof r.verifier.score === "number") ? r.verifier.score : r.score;
-    const score = typeof rawScore === "number" ? Math.max(0, Math.min(1, rawScore / 10)) : null;
-    const cls = scoreClass(score);
-    const verdict = (r.verifier && r.verifier.verdict) ? r.verifier.verdict : verdictText(score);
-
-    // Extract chunk citations like [abc123-0] from the answer text for the badges row
-    const answer = r.answer ?? r.response ?? "(no answer)";
-    const citations = Array.from(answer.matchAll(/\[([a-z0-9-]+)\]/gi)).map(m => m[1]);
-
-    const trace = r.trace || r.iterations || [];
-
-    let html = `<div class="answer">
-      <div class="answer-head">
-        <span class="badge ${cls}">${escapeHtml(verdict)} · ${fmtScore(score)}</span>
-      </div>
-      <div class="answer-text">${escapeHtml(answer)}</div>`;
-
-    if (citations.length) {
-      html += '<div class="chunks">';
-      citations.forEach(c => {
-        html += `<span class="badge mono">${escapeHtml(c)}</span>`;
-      });
-      html += '</div>';
-    }
-
-    if (trace.length) {
-      html += '<div class="trace-list">';
-      trace.forEach((t, i) => {
-        const tRaw = t.verifier_score ?? t.score;
-        const tScore = typeof tRaw === "number" ? Math.max(0, Math.min(1, tRaw / 10)) : null;
-        const tCls = scoreClass(tScore);
-        const content = JSON.stringify(t, null, 2);
-        html += `<details class="trace">
-          <summary>
-            <span class="muted" style="font-family:var(--mono)">#${i+1}</span>
-            <span class="badge ${tCls}">${fmtScore(tScore)}</span>
-            <span class="muted" style="margin-left:auto">expand</span>
-          </summary>
-          <div class="body"><pre>${escapeHtml(content)}</pre></div>
-        </details>`;
-      });
-      html += '</div>';
-    }
-    html += '</div>';
-    answerBody.innerHTML = html;
-    answerCard.hidden = false;
-  }
-
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
-  }
-
-  askBtn.addEventListener("click", async () => {
-    const question = $("#q").value.trim();
-    qErr.textContent = "";
-    if (!question) { qErr.textContent = "Please enter a question."; return; }
-    askBtn.disabled = true;
-    const orig = askBtn.innerHTML;
-    askBtn.innerHTML = '<span class="spinner"></span> Thinking…';
-    try {
-      const r = await api("/api/query", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          question,
-          rerank_top: parseInt($("#topk").value, 10),
-          mode: $("#mode").value,
-        }),
-      });
-      renderAnswer(r);
-    } catch (e) {
-      qErr.textContent = "Query failed: " + e.message;
-    } finally {
-      askBtn.innerHTML = orig;
-      askBtn.disabled = false;
-    }
-  });
-
-  loadStats();
-})();
-</script>
-</body>
-</html>"""
-
-@app.get("/", response_class=HTMLResponse)
-async def index():
-    return PAGE
 
 @app.get("/health")
 def health():
@@ -540,6 +73,7 @@ def health():
     except Exception:
         log.exception("health check failed")
         return JSONResponse(status_code=503, content={"status": "degraded"})
+
 
 @app.post("/api/ingest", dependencies=API_DEPENDENCIES)
 def api_ingest(
@@ -555,8 +89,6 @@ def api_ingest(
         raise HTTPException(status_code=400, detail="chunk_size must be between 64 and 5000")
     if not (0 <= overlap <= 1000):
         raise HTTPException(status_code=400, detail="overlap must be between 0 and 1000")
-    if file.size is not None and file.size > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail=f"File too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB)")
     try:
         content = file.file.read(MAX_UPLOAD_BYTES + 1)
         if len(content) > MAX_UPLOAD_BYTES:
@@ -566,8 +98,7 @@ def api_ingest(
             with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                 tmp.write(content)
                 tmp_path = tmp.name
-            parser = pick_parser(tmp_path)
-            parsed = as_result(parser(tmp_path))
+            parsed = as_result(pick_parser(tmp_path)(tmp_path))
         finally:
             if tmp_path:
                 Path(tmp_path).unlink(missing_ok=True)
@@ -576,11 +107,7 @@ def api_ingest(
         chunks = ingestion.make_chunks(parsed.effective_text, strategy=strategy, chunk_size=chunk_size, overlap=overlap)
 
         if not chunks:
-            raise HTTPException(
-                status_code=400,
-                detail="No text extracted — scanned PDF? Enable OCR with: "
-                       "brew install tesseract tesseract-lang && uv sync --group ocr.",
-            )
+            raise HTTPException(status_code=400, detail=ingestion._no_text_error())
         if len(chunks) > MAX_INGEST_CHUNKS:
             raise HTTPException(
                 status_code=413,
@@ -615,8 +142,8 @@ def api_ingest(
         log.exception("ingest failed: %s", file.filename)
         raise HTTPException(status_code=500, detail="Ingest failed")
 
-class QueryRequest(BaseModel):
-    question: str
+
+class RetrievalParams(BaseModel):
     mode: str = Field("hybrid", pattern="^(vector|lexical|hybrid)$")
     top_k: int = Field(50, ge=1, le=200)
     rerank_top: int = Field(5, ge=1, le=50)
@@ -624,19 +151,26 @@ class QueryRequest(BaseModel):
     small_to_big: bool = True
     parent_top_k: int = Field(5, ge=1, le=50)
     max_context_chars: int = Field(12000, ge=1, le=100000)
+
+    def to_retrieval_config(self, **overrides) -> RetrievalConfig:
+        return RetrievalConfig(
+            mode=self.mode, top_k=self.top_k, rerank_top=self.rerank_top,
+            use_reranker=self.use_reranker, small_to_big=self.small_to_big,
+            parent_top_k=self.parent_top_k, max_context_chars=self.max_context_chars,
+            **overrides,
+        )
+
+
+class QueryRequest(RetrievalParams):
+    question: str
     min_score: int = Field(8, ge=1, le=10)
 
-class EvalRequest(BaseModel):
+
+class EvalRequest(RetrievalParams):
     questions_file: str = "eval/questions.yaml"
     retrieval_only: bool = True
-    mode: str = Field("hybrid", pattern="^(vector|lexical|hybrid)$")
-    top_k: int = Field(50, ge=1, le=200)
-    rerank_top: int = Field(5, ge=1, le=50)
-    use_reranker: bool = True
-    small_to_big: bool = True
-    parent_top_k: int = Field(5, ge=1, le=50)
-    max_context_chars: int = Field(12000, ge=1, le=100000)
     variant: str = "dashboard"
+
 
 class ReingestRequest(BaseModel):
     strategy: str = Field("sentence", pattern="^(fixed|sentence)$")
@@ -644,31 +178,13 @@ class ReingestRequest(BaseModel):
     overlap: int = Field(64, ge=0, le=1000)
     parent_size: int = Field(4, ge=1, le=50)
 
-def _compact_chunk(chunk: dict) -> dict:
-    meta = chunk.get("metadata") or {}
-    return {
-        "id": chunk.get("id"),
-        "citation": chunk.get("citation") or meta.get("citation"),
-        "source": meta.get("source"),
-        "distance": chunk.get("distance"),
-        "rerank_score": chunk.get("rerank_score"),
-        "rrf_score": chunk.get("rrf_score"),
-        "text": chunk.get("text"),
-        "metadata": meta,
-    }
 
 @app.post("/api/query", dependencies=API_DEPENDENCIES)
 def api_query(req: QueryRequest):
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question is required")
     try:
-        cfg = RetrievalConfig(
-            mode=req.mode, top_k=req.top_k, rerank_top=req.rerank_top,
-            use_reranker=req.use_reranker, small_to_big=req.small_to_big,
-            parent_top_k=req.parent_top_k, max_context_chars=req.max_context_chars,
-            min_score=req.min_score,
-        )
-        result = retrieve(req.question, cfg)
+        result = retrieve(req.question, req.to_retrieval_config(min_score=req.min_score))
         return {
             "answer": result["answer"],
             "verifier": result["verifier"],
@@ -678,13 +194,14 @@ def api_query(req: QueryRequest):
             "partial": result.get("partial", False),
             "run_id": result.get("run_id"),
             "citations": [c.get("citation") for c in result.get("chunks", [])],
-            "chunks": [_compact_chunk(c) for c in result.get("chunks", [])],
+            "chunks": [compact_chunk(c) for c in result.get("chunks", [])],
             "usage": result.get("usage", {}),
             "latency_ms": result.get("latency_ms"),
         }
     except Exception:
         log.exception("query failed: %r", req.question)
         raise HTTPException(status_code=500, detail="Query failed")
+
 
 @app.get("/api/config", dependencies=API_DEPENDENCIES)
 def api_config():
@@ -699,9 +216,11 @@ def api_config():
         "active_collection": vector_store.default_collection_name(),
     }
 
+
 @app.get("/api/collections", dependencies=API_DEPENDENCIES)
 def api_collections():
     return {"collections": vector_store.list_collections()}
+
 
 @app.delete("/api/collections/{name}", dependencies=API_DEPENDENCIES)
 def api_delete_collection(name: str):
@@ -711,21 +230,20 @@ def api_delete_collection(name: str):
         raise HTTPException(status_code=404, detail=f"Collection not found: {name}")
     return {"status": "ok", "collection": name}
 
+
 @app.get("/api/docs", dependencies=API_DEPENDENCIES)
 def api_docs():
     from . import manifest
     return {"documents": vector_store.list_documents(), "manifest": manifest.list_documents()}
 
+
 @app.get("/api/docs/{doc_id}", dependencies=API_DEPENDENCIES)
 def api_doc(doc_id: str):
-    from . import manifest
-    manifest_doc = manifest.get_document(doc_id)
-    for d in vector_store.list_documents():
-        if doc_id in {d.get("doc_id"), d.get("file_sha"), d.get("source"), d.get("basename")}:
-            return {"manifest": manifest_doc, "indexed": d}
-    if manifest_doc:
-        return {"manifest": manifest_doc, "indexed": None}
-    raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
+    found = vector_store.find_document(doc_id)
+    if found is None:
+        raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
+    return {"manifest": found["manifest"], "indexed": found["indexed"]}
+
 
 @app.delete("/api/docs/{doc_id}", dependencies=API_DEPENDENCIES)
 def api_delete_doc(doc_id: str):
@@ -734,29 +252,20 @@ def api_delete_doc(doc_id: str):
         raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
     return {"status": "ok", "deleted_chunks": removed, "identifier": doc_id}
 
+
 @app.post("/api/docs/{doc_id}/reingest", dependencies=API_DEPENDENCIES)
 def api_reingest_doc(doc_id: str, req: ReingestRequest):
-    from . import manifest
-    manifest_doc = manifest.get_document(doc_id)
-    indexed_doc = next((
-        d for d in vector_store.list_documents()
-        if doc_id in {d.get("doc_id"), d.get("file_sha"), d.get("source"), d.get("basename")}
-    ), None)
-    source = (manifest_doc or indexed_doc or {}).get("source")
+    source = vector_store.document_source(doc_id)
     if not source:
         raise HTTPException(status_code=404, detail=f"Document not found: {doc_id}")
     path = Path(source)
     if not path.exists():
         raise HTTPException(status_code=400, detail=f"Source file no longer exists: {path}")
+    if path.stat().st_size > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"File too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB)")
     try:
-        content = path.read_bytes()
-        if len(content) > MAX_UPLOAD_BYTES:
-            raise HTTPException(status_code=413, detail=f"File too large (max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB)")
-        text = as_result(pick_parser(str(path))(str(path)))
-        result = ingestion.ingest_text(
+        result = ingestion.ingest_file(
             str(path),
-            content,
-            text,
             strategy=req.strategy,
             chunk_size=req.chunk_size,
             overlap=req.overlap,
@@ -771,9 +280,11 @@ def api_reingest_doc(doc_id: str, req: ReingestRequest):
         log.exception("reingest failed: %s", doc_id)
         raise HTTPException(status_code=500, detail="Reingest failed")
 
+
 @app.get("/api/runs", dependencies=API_DEPENDENCIES)
 def api_runs(limit: int = Query(50, ge=1, le=500)):
     return {"runs": runs.list_runs(limit=limit)}
+
 
 @app.get("/api/runs/{run_id}", dependencies=API_DEPENDENCIES)
 def api_run(run_id: int):
@@ -782,9 +293,11 @@ def api_run(run_id: int):
         raise HTTPException(status_code=404, detail=f"Run not found: {run_id}")
     return run
 
+
 @app.get("/api/evals", dependencies=API_DEPENDENCIES)
 def api_evals(limit: int = Query(50, ge=1, le=500)):
     return {"evals": runs.list_evals(limit=limit)}
+
 
 @app.get("/api/evals/{eval_id}", dependencies=API_DEPENDENCIES)
 def api_eval(eval_id: int):
@@ -793,36 +306,24 @@ def api_eval(eval_id: int):
         raise HTTPException(status_code=404, detail=f"Eval not found: {eval_id}")
     return ev
 
+
 @app.post("/api/eval", dependencies=API_DEPENDENCIES)
 def api_run_eval(req: EvalRequest):
     try:
         from . import evaluation
-        questions = evaluation.load_questions(evaluation.secure_questions_path(req.questions_file))
-        if len(questions) > evaluation.MAX_EVAL_QUESTIONS:
-            raise HTTPException(
-                status_code=413,
-                detail=f"Too many questions ({len(questions)} > {evaluation.MAX_EVAL_QUESTIONS})",
-            )
-        cfg = RetrievalConfig(
-            mode=req.mode,
-            top_k=req.top_k,
-            rerank_top=req.rerank_top,
-            use_reranker=req.use_reranker,
-            small_to_big=req.small_to_big,
-            parent_top_k=req.parent_top_k,
-            max_context_chars=req.max_context_chars,
+        report = evaluation.run_eval(
+            req.questions_file,
+            req.to_retrieval_config(),
+            retrieval_only=req.retrieval_only,
+            variant=req.variant,
         )
-        report = evaluation.evaluate(questions, cfg, retrieval_only=req.retrieval_only)
-        report["config"]["collection"] = vector_store.default_collection_name()
-        eval_id = runs.log_eval(req.variant, report["config"], report["summary"], report["per_question"])
-        return {"status": "ok", "eval_id": eval_id, **report}
-    except HTTPException:
-        raise
+        return {"status": "ok", "eval_id": report["eval_id"], **report}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception:
         log.exception("eval failed: %s", req.questions_file)
         raise HTTPException(status_code=500, detail="Eval failed")
+
 
 @app.get("/api/stats", dependencies=API_DEPENDENCIES)
 def api_stats():
