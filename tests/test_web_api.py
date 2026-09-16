@@ -6,15 +6,20 @@ from rag_lab.web import app
 
 
 @pytest.fixture(autouse=True)
-def _isolated_store(tmp_path, monkeypatch):
+def _isolated_store(store, monkeypatch):
     """Every test runs against a throwaway DB, never the real default store,
     and with the API token off so tests are hermetic."""
-    vector_store.init_store(str(tmp_path / "db"))
     monkeypatch.setattr(web, "get_api_token", lambda: "")
 
 
-def test_dashboard_config_and_stats_endpoints():
-    client = TestClient(app)
+@pytest.fixture
+def client():
+    # base_url sends a loopback Host header; the default "testserver" would
+    # be rejected by the DNS-rebinding middleware.
+    return TestClient(app, base_url="http://127.0.0.1")
+
+
+def test_dashboard_config_and_stats_endpoints(client):
     cfg = client.get("/api/config")
     assert cfg.status_code == 200
     assert cfg.json()["llm_model"] == config.LLM_MODEL
@@ -24,15 +29,14 @@ def test_dashboard_config_and_stats_endpoints():
     assert "collection" in stats.json()
 
 
-def test_dashboard_collections_docs_runs_evals_endpoints():
-    client = TestClient(app)
+def test_dashboard_collections_docs_runs_evals_endpoints(client):
     assert client.get("/api/collections").status_code == 200
     assert client.get("/api/docs").status_code == 200
     assert client.get("/api/runs").status_code == 200
     assert client.get("/api/evals").status_code == 200
 
 
-def test_dashboard_doc_detail_includes_manifest_and_index(monkeypatch):
+def test_dashboard_doc_detail_includes_manifest_and_index(client, monkeypatch):
     monkeypatch.setattr(manifest, "get_document", lambda doc_id: {
         "doc_id": "doc1",
         "source": "notes/doc.md",
@@ -47,7 +51,7 @@ def test_dashboard_doc_detail_includes_manifest_and_index(monkeypatch):
         "chunks": 2,
     }])
 
-    resp = TestClient(app).get("/api/docs/doc1")
+    resp = client.get("/api/docs/doc1")
 
     assert resp.status_code == 200
     body = resp.json()
@@ -55,7 +59,7 @@ def test_dashboard_doc_detail_includes_manifest_and_index(monkeypatch):
     assert body["indexed"]["chunks"] == 2
 
 
-def test_dashboard_reingest_uses_manifest_source(tmp_path, monkeypatch):
+def test_dashboard_reingest_uses_manifest_source(client, tmp_path, monkeypatch):
     source = tmp_path / "doc.md"
     source.write_text("# Doc\n\nHello")
     monkeypatch.setattr(manifest, "get_document", lambda doc_id: {
@@ -70,13 +74,13 @@ def test_dashboard_reingest_uses_manifest_source(tmp_path, monkeypatch):
         "file_sha": "doc1",
     })
 
-    resp = TestClient(app).post("/api/docs/doc1/reingest", json={"strategy": "sentence"})
+    resp = client.post("/api/docs/doc1/reingest", json={"strategy": "sentence"})
 
     assert resp.status_code == 200
     assert resp.json()["chunks"] == 1
 
 
-def test_dashboard_reingest_falls_back_to_indexed_source(tmp_path, monkeypatch):
+def test_dashboard_reingest_falls_back_to_indexed_source(client, tmp_path, monkeypatch):
     source = tmp_path / "indexed.md"
     source.write_text("# Doc\n\nHello")
     monkeypatch.setattr(manifest, "get_document", lambda doc_id: None)
@@ -93,32 +97,32 @@ def test_dashboard_reingest_falls_back_to_indexed_source(tmp_path, monkeypatch):
         "file_sha": "doc1",
     })
 
-    resp = TestClient(app).post("/api/docs/doc1/reingest", json={"strategy": "sentence"})
+    resp = client.post("/api/docs/doc1/reingest", json={"strategy": "sentence"})
 
     assert resp.status_code == 200
     assert resp.json()["source"] == str(source)
 
 
-def test_dashboard_delete_collection_refuses_active(monkeypatch):
+def test_dashboard_delete_collection_refuses_active(client, monkeypatch):
     monkeypatch.setattr(vector_store, "default_collection_name", lambda: "active")
 
-    resp = TestClient(app).delete("/api/collections/active")
+    resp = client.delete("/api/collections/active")
 
     assert resp.status_code == 400
 
 
-def test_dashboard_delete_collection(monkeypatch):
+def test_dashboard_delete_collection(client, monkeypatch):
     monkeypatch.setattr(vector_store, "default_collection_name", lambda: "active")
     monkeypatch.setattr(vector_store, "delete_collection", lambda name: name == "old")
 
-    resp = TestClient(app).delete("/api/collections/old")
+    resp = client.delete("/api/collections/old")
 
     assert resp.status_code == 200
     assert resp.json()["collection"] == "old"
 
 
-def test_health_reports_ok():
-    resp = TestClient(app).get("/health")
+def test_health_reports_ok(client):
+    resp = client.get("/health")
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
@@ -126,17 +130,42 @@ def test_health_reports_ok():
 
 def test_api_token_required_when_configured(monkeypatch):
     monkeypatch.setattr(web, "get_api_token", lambda: "secret")
-    client = TestClient(app)
+    c = TestClient(app)
 
-    assert client.get("/api/config").status_code == 401
-    assert client.get("/api/config", headers={"Authorization": "Bearer wrong"}).status_code == 401
-    ok = client.get("/api/config", headers={"Authorization": "Bearer secret"})
+    assert c.get("/api/config").status_code == 401
+    assert c.get("/api/config", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    ok = c.get("/api/config", headers={"Authorization": "Bearer secret"})
     assert ok.status_code == 200
 
 
-def test_ingest_rejects_oversized_upload(monkeypatch):
+def test_rebinded_host_rejected_in_no_token_mode():
+    """DNS-rebinding defense: in no-token loopback mode a request whose Host
+    header is not a loopback hostname must be refused."""
+    c = TestClient(app, base_url="http://127.0.0.1")
+
+    assert c.get("/api/config", headers={"Host": "evil.example.com"}).status_code == 403
+    assert c.get("/api/config", headers={"Host": ""}).status_code == 403
+
+
+def test_loopback_host_allowed_in_no_token_mode():
+    c = TestClient(app, base_url="http://127.0.0.1")
+
+    for host in ("127.0.0.1", "127.0.0.1:8000", "localhost", "localhost:8000", "[::1]", "[::1]:8000"):
+        assert c.get("/api/config", headers={"Host": host}).status_code == 200
+
+
+def test_host_header_ignored_when_token_configured(monkeypatch):
+    """Token mode may serve LAN hostnames; the bearer gate is the protection."""
+    monkeypatch.setattr(web, "get_api_token", lambda: "secret")
+    c = TestClient(app, base_url="http://127.0.0.1")
+    headers = {"Host": "192.168.1.5:8000", "Authorization": "Bearer secret"}
+
+    assert c.get("/api/config", headers=headers).status_code == 200
+
+
+def test_ingest_rejects_oversized_upload(client, monkeypatch):
     monkeypatch.setattr(web, "MAX_UPLOAD_BYTES", 16)
-    resp = TestClient(app).post(
+    resp = client.post(
         "/api/ingest",
         files={"file": ("big.md", b"x" * 64, "text/markdown")},
     )
@@ -144,10 +173,10 @@ def test_ingest_rejects_oversized_upload(monkeypatch):
     assert resp.status_code == 413
 
 
-def test_reingest_reports_clean_error_not_traceback(tmp_path, monkeypatch):
+def test_reingest_reports_clean_error_not_traceback(client, tmp_path, monkeypatch):
     """B1: a parser raising on a real file must surface a 400/500 detail,
     not a raw 500 traceback."""
-    import rag_lab.web as web_mod
+    import rag_lab.parsers as parsers_mod
     source = tmp_path / "doc.md"
     source.write_text("x")
     monkeypatch.setattr(manifest, "get_document", lambda doc_id: {
@@ -156,10 +185,9 @@ def test_reingest_reports_clean_error_not_traceback(tmp_path, monkeypatch):
         "file_sha": "doc1",
         "chunk_count": 1,
     })
-    monkeypatch.setattr(web_mod, "pick_parser", lambda path: lambda p: (_ for _ in ()).throw(ValueError("boom")))
-    monkeypatch.setattr(web_mod.ingestion, "ingest_text", lambda *a, **k: {"chunks": 1, "file_sha": "doc1"})
+    monkeypatch.setattr(parsers_mod, "pick_parser", lambda path: (_ for _ in ()).throw(ValueError("boom")))
 
-    resp = TestClient(app).post("/api/docs/doc1/reingest", json={"strategy": "sentence"})
+    resp = client.post("/api/docs/doc1/reingest", json={"strategy": "sentence"})
 
     assert resp.status_code == 400
     assert "boom" in resp.json()["detail"]
