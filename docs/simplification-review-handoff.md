@@ -69,18 +69,19 @@
 
 | File | Before → After | Where the rest went |
 |---|---|---|
-| `rag_lab/web.py` | 854 → 344 | 479-line inline SPA → `rag_lab/static/index.html` |
+| `rag_lab/web.py` | 854 → 324 | 479-line inline SPA deleted outright (v1 test console superseded by the React dashboard; commit `97bdffc`) |
 | `rag_lab/cli.py` | 628 → 281 | `cli_inspect.py` (192: runs/docs/collections/config), `cli_eval.py` (206: eval/compare) |
 | `dashboard/src/App.tsx` | 412 → 72 | `components/` (AskView 97, CorpusView 104, RunsView 33, EvalView 44, SettingsView 20, Badge 3), `api.ts` (60: shared fetch + types) |
 | Stale tree | 3,200 LOC duplicated worktree | `.worktrees/citation-fix-and-reliability` removed via `git worktree remove` (branch kept in refs, **not merged** into v2) |
 
 ## 5. The author's own shortfall assessment (verify the numbers)
 
-- **C1 (≥30% LOC) is NOT met.** Real code lines: 6,399 → 5,831 (**-568, -8.9%**).
-  Whole-tree incl. worktree removal: 12,831 → ~6,310 (-51%). PR diffstat: 38 files,
-  +2,002 / -2,020. The author claims an honest 30% was never achievable without deleting
-  features or tests, and that this was stated before starting. **Judge: was the -8.9%
-  real result the maximum honest cut, or did the author under-deliver?**
+- **C1 (≥30% LOC) is NOT met.** Real code lines: 6,399 → 5,824 (**-575, -9.0%**) after
+  deleting the test console. Whole-tree incl. worktree removal: 12,831 → ~6,310 (-51%).
+  PR diffstat: 39 files, +1,757 / -2,026 (net -269). The author claims an honest 30%
+  was never achievable without deleting features or tests, and that this was stated
+  before starting. **Judge: was the -9.0% real result the maximum honest cut, or did
+  the author under-deliver?**
 - Known deliberate behavior changes (a judge should decide if each is acceptable):
   1. `/api/query` chunk objects no longer include the `metadata` field (dashboard never read it).
   2. MCP `rag_ingest` returns `{"status": "error"}` instead of raising `ValueError`.
