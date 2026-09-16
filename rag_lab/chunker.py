@@ -54,10 +54,3 @@ def chunk_sentence(text: str, target_size: int = 512, overlap: int = 1) -> list[
         c_start, c_end = current[0][0], current[-1][1]
         chunks.append(Chunk(text=text[c_start:c_end], start=c_start, end=c_end))
     return chunks
-
-STRATEGIES = {"fixed": chunk_fixed, "sentence": chunk_sentence}
-
-def chunk(text: str, strategy: str = "sentence", **kwargs) -> list[Chunk]:
-    if strategy not in STRATEGIES:
-        raise ValueError(f"Unknown strategy: {strategy}. Use one of {list(STRATEGIES)}")
-    return STRATEGIES[strategy](text, **kwargs)

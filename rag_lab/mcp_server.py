@@ -1,56 +1,16 @@
 """MCP tools for rag-lab.
 
-The helper functions are intentionally importable without the MCP SDK so tests
+The tool functions are intentionally importable without the MCP SDK so tests
 and CLI code can exercise behavior directly. `build_server()` wires them to
 FastMCP when the optional runtime is available.
 """
-from pathlib import Path
-
 from . import evaluation, ingestion, vector_store
-from .parsers import as_result, pick_parser
-from .retriever import RetrievalConfig, retrieve, retrieve_hits, select_context_chunks
+from .retriever import RetrievalConfig, compact_chunk, retrieve, retrieve_hits, select_context_chunks
 
 
-def _cfg(
-    mode: str = "hybrid",
-    top_k: int = 50,
-    rerank_top: int = 5,
-    use_reranker: bool = True,
-    small_to_big: bool = True,
-    parent_top_k: int = 5,
-    max_context_chars: int = 12000,
-) -> RetrievalConfig:
-    # Caps: an MCP client must not be able to balloon a query into a
-    # multi-thousand-chunk, unbounded-cost run.
-    top_k = min(max(top_k, 1), 200)
-    rerank_top = min(max(rerank_top, 1), 50)
-    parent_top_k = min(max(parent_top_k, 1), 50)
-    max_context_chars = min(max(max_context_chars, 1), 100000)
-    return RetrievalConfig(
-        mode=mode,
-        top_k=top_k,
-        rerank_top=rerank_top,
-        use_reranker=use_reranker,
-        small_to_big=small_to_big,
-        parent_top_k=parent_top_k,
-        max_context_chars=max_context_chars,
-    )
-
-
-def _compact_chunk(chunk: dict, include_text: bool = True) -> dict:
-    meta = chunk.get("metadata") or {}
-    out = {
-        "id": chunk.get("id"),
-        "citation": chunk.get("citation") or meta.get("citation"),
-        "source": meta.get("source"),
-        "distance": chunk.get("distance"),
-        "rerank_score": chunk.get("rerank_score"),
-        "rrf_score": chunk.get("rrf_score"),
-    }
-    if include_text:
-        text = chunk.get("text") or ""
-        out["text"] = text[:2000]
-    return out
+def _cfg(**kwargs) -> RetrievalConfig:
+    """RetrievalConfig with API/MCP safety clamps applied."""
+    return RetrievalConfig(**kwargs).clamped()
 
 
 def rag_search(
@@ -66,8 +26,8 @@ def rag_search(
     context = select_context_chunks(hits, cfg)
     return {
         "question": question,
-        "candidates": [_compact_chunk(h, include_text=False) for h in hits[:rerank_top]],
-        "context": [_compact_chunk(c) for c in context],
+        "candidates": [compact_chunk(h, include_text=False) for h in hits[:rerank_top]],
+        "context": [compact_chunk(c) for c in context],
     }
 
 
@@ -88,7 +48,7 @@ def rag_answer(
         "citation_validation": result.get("citation_validation"),
         "iterations": result.get("iterations"),
         "partial": result.get("partial", False),
-        "chunks": [_compact_chunk(c) for c in result.get("chunks", [])],
+        "chunks": [compact_chunk(c) for c in result.get("chunks", [])],
     }
 
 
@@ -99,23 +59,14 @@ def rag_ingest(
     overlap: int = 64,
     parent_size: int = 4,
 ) -> dict:
-    p = Path(path)
-    if not p.exists():
-        raise ValueError(f"File not found: {path}")
-    parsed = as_result(pick_parser(str(p))(str(p)))
-    quality = parsed.quality()
-    content = p.read_bytes()
-    result = ingestion.ingest_text(
-        str(p),
-        content,
-        parsed.effective_text,
-        strategy=strategy,
-        chunk_size=chunk_size,
-        overlap=overlap,
-        parent_size=parent_size,
-        parse_quality=quality,
-    )
-    return {"status": "ok", "source": str(p), **result}
+    try:
+        result = ingestion.ingest_file(
+            path, strategy=strategy, chunk_size=chunk_size,
+            overlap=overlap, parent_size=parent_size,
+        )
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+    return {"status": "ok", "source": path, **result}
 
 
 def rag_delete(identifier: str, confirm: bool = False) -> dict:
@@ -141,13 +92,7 @@ def rag_reingest(
     overlap: int = 64,
     parent_size: int = 4,
 ) -> dict:
-    from . import manifest
-    doc = manifest.get_document(identifier)
-    indexed = next((
-        d for d in vector_store.list_documents()
-        if identifier in {d.get("doc_id"), d.get("file_sha"), d.get("source"), d.get("basename")}
-    ), None)
-    source = (doc or indexed or {}).get("source")
+    source = vector_store.document_source(identifier)
     if not source:
         return {"status": "not_found", "identifier": identifier}
     return rag_ingest(
@@ -178,15 +123,16 @@ def rag_eval_run(
     use_reranker: bool = True,
     small_to_big: bool = True,
 ) -> dict:
-    from . import runs
-    questions = evaluation.load_questions(evaluation.secure_questions_path(questions_file))
-    if len(questions) > evaluation.MAX_EVAL_QUESTIONS:
-        return {"status": "error", "message": f"too many questions ({len(questions)} > {evaluation.MAX_EVAL_QUESTIONS})"}
-    cfg = _cfg(mode=mode, use_reranker=use_reranker, small_to_big=small_to_big)
-    report = evaluation.evaluate(questions, cfg, retrieval_only=retrieval_only)
-    report["config"]["collection"] = vector_store.default_collection_name()
-    eval_id = runs.log_eval("mcp", report["config"], report["summary"], report["per_question"])
-    return {"status": "ok", "eval_id": eval_id, "summary": report["summary"], "config": report["config"]}
+    try:
+        report = evaluation.run_eval(
+            questions_file,
+            _cfg(mode=mode, use_reranker=use_reranker, small_to_big=small_to_big),
+            retrieval_only=retrieval_only,
+            variant="mcp",
+        )
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+    return {"status": "ok", "eval_id": report["eval_id"], "summary": report["summary"], "config": report["config"]}
 
 
 def build_server():
@@ -196,15 +142,11 @@ def build_server():
         raise RuntimeError("Install the 'mcp' package to run the rag-lab MCP server") from e
 
     server = FastMCP("rag-lab")
-    server.tool()(rag_search)
-    server.tool()(rag_answer)
-    server.tool()(rag_ingest)
-    server.tool()(rag_delete)
-    server.tool()(rag_docs_list)
-    server.tool()(rag_reingest)
-    server.tool()(rag_collections_list)
-    server.tool()(rag_runs_show)
-    server.tool()(rag_eval_run)
+    for tool in (
+        rag_search, rag_answer, rag_ingest, rag_delete, rag_docs_list,
+        rag_reingest, rag_collections_list, rag_runs_show, rag_eval_run,
+    ):
+        server.tool()(tool)
     return server
 
 

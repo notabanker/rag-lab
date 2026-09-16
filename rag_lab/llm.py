@@ -11,6 +11,18 @@ log = logging.getLogger("rag_lab.llm")
 CHAT_URL = f"{LLM_BASE_URL}/chat/completions"
 
 
+def content_of(body: dict) -> str:
+    return (body.get("choices", [{}])[0].get("message", {}).get("content") or "").strip()
+
+
+def usage_of(body: dict) -> dict:
+    usage = body.get("usage") or {}
+    return {
+        "prompt_tokens": usage.get("prompt_tokens", 0),
+        "completion_tokens": usage.get("completion_tokens", 0),
+    }
+
+
 def chat(
     payload: dict,
     timeout: float | None = None,

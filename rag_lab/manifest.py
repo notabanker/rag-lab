@@ -1,54 +1,15 @@
-"""Persistent document manifest for corpus management."""
+"""Persistent document manifest for corpus management (shares the runs DB)."""
 import json
-import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
 
-from . import vector_store
+from . import db
 from .config import CHUNKING_VERSION, EMBEDDING_MODEL
 
 PARSER_VERSION = "parser-v1"
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS documents (
-    doc_id TEXT PRIMARY KEY,
-    source TEXT NOT NULL,
-    file_sha TEXT NOT NULL,
-    parser_version TEXT NOT NULL,
-    chunking_version TEXT NOT NULL,
-    embedding_model TEXT NOT NULL,
-    chunk_count INTEGER NOT NULL,
-    ingested_at TEXT NOT NULL
-);
-"""
-
-
-def _db_path() -> Path:
-    d = Path(vector_store.persist_dir())
-    d.mkdir(parents=True, exist_ok=True)
-    return d / "runs.sqlite3"
-
-
-def _connect() -> sqlite3.Connection:
-    # WAL + busy_timeout: shares runs.sqlite3 with runs.py; concurrent writers
-    # (web API + CLI) must not hit "database is locked".
-    conn = sqlite3.connect(_db_path(), timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(_SCHEMA)
-    cols = {r["name"] for r in conn.execute("PRAGMA table_info(documents)")}
-    if "parse_report" not in cols:
-        conn.execute("ALTER TABLE documents ADD COLUMN parse_report TEXT")
-        conn.commit()
-    return conn
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
 
 def log_document(source: str, file_sha: str, chunk_count: int, parse_report: dict | None = None):
-    conn = _connect()
+    conn = db.connect()
     try:
         conn.execute(
             "INSERT OR REPLACE INTO documents "
@@ -62,7 +23,7 @@ def log_document(source: str, file_sha: str, chunk_count: int, parse_report: dic
                 CHUNKING_VERSION,
                 EMBEDDING_MODEL,
                 chunk_count,
-                _now(),
+                db.now(),
                 json.dumps(parse_report) if parse_report else None,
             ),
         )
@@ -72,7 +33,7 @@ def log_document(source: str, file_sha: str, chunk_count: int, parse_report: dic
 
 
 def list_documents() -> list[dict]:
-    conn = _connect()
+    conn = db.connect()
     try:
         rows = conn.execute("SELECT * FROM documents ORDER BY source").fetchall()
         docs = [dict(r) for r in rows]
@@ -84,8 +45,7 @@ def list_documents() -> list[dict]:
 
 
 def get_document(identifier: str) -> dict | None:
-    docs = list_documents()
-    for d in docs:
+    for d in list_documents():
         if identifier in {d["doc_id"], d["file_sha"], d["source"], Path(d["source"]).name}:
             return d
     return None
@@ -95,7 +55,7 @@ def delete_document(identifier: str):
     doc = get_document(identifier)
     if doc is None:
         return
-    conn = _connect()
+    conn = db.connect()
     try:
         conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc["doc_id"],))
         conn.commit()

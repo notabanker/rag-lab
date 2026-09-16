@@ -1,4 +1,6 @@
 import re
+from typing import Iterator
+
 import chromadb
 from chromadb.config import Settings
 
@@ -9,11 +11,13 @@ _CLIENT = None
 _COLLECTIONS = {}
 _DEFAULT_NAME = DEFAULT_COLLECTION
 
+
 def init_store(persist_dir: str):
     global _PERSIST_DIR, _CLIENT, _COLLECTIONS
     _PERSIST_DIR = persist_dir
     _CLIENT = None
     _COLLECTIONS = {}
+
 
 def persist_dir() -> str:
     global _PERSIST_DIR
@@ -21,18 +25,22 @@ def persist_dir() -> str:
         _PERSIST_DIR = default_db_path()
     return _PERSIST_DIR
 
+
 def set_default_collection(name: str):
     global _DEFAULT_NAME
     _DEFAULT_NAME = name
 
+
 def default_collection_name() -> str:
     return _DEFAULT_NAME
+
 
 def _client():
     global _CLIENT
     if _CLIENT is None:
         _CLIENT = chromadb.PersistentClient(path=persist_dir(), settings=Settings(anonymized_telemetry=False))
     return _CLIENT
+
 
 def get_collection(name: str = None):
     name = name or _DEFAULT_NAME
@@ -42,6 +50,7 @@ def get_collection(name: str = None):
             metadata=_base_metadata()
         )
     return _COLLECTIONS[name]
+
 
 def _base_metadata(
     embedding_model: str = None,
@@ -54,15 +63,17 @@ def _base_metadata(
         "chunking_version": chunking_version or CHUNKING_VERSION,
     }
 
+
 def collection_metadata(name: str = None) -> dict:
     return dict(get_collection(name).metadata or {})
+
 
 def _set_collection_metadata(name: str = None, **updates):
     coll = get_collection(name)
     merged = {**(coll.metadata or {}), **{k: v for k, v in updates.items() if v is not None}}
-    if "hnsw:space" not in merged:
-        merged["hnsw:space"] = "cosine"
+    merged.setdefault("hnsw:space", "cosine")
     coll.modify(metadata=merged)
+
 
 def ensure_collection_compatible(
     name: str = None,
@@ -75,8 +86,7 @@ def ensure_collection_compatible(
     model = embedding_model or EMBEDDING_MODEL
     chunking = chunking_version or CHUNKING_VERSION
     coll = get_collection(name)
-    meta = dict(coll.metadata or {})
-    existing_model = meta.get("embedding_model")
+    existing_model = (coll.metadata or {}).get("embedding_model")
     if not existing_model and coll.count() > 0 and not force:
         raise ValueError(
             f"collection '{name}' has {coll.count()} chunks but no embedding_model metadata; "
@@ -90,9 +100,11 @@ def ensure_collection_compatible(
     if not existing_model or force:
         _set_collection_metadata(name, embedding_model=model, chunking_version=chunking, index_version=INDEX_VERSION)
 
+
 def _invalidate_lexical():
     from . import lexical
     lexical.invalidate(_DEFAULT_NAME)
+
 
 def upsert(
     chunks: list,
@@ -117,6 +129,24 @@ def upsert(
     )
     _invalidate_lexical()
 
+
+def iter_records(collection: str = None, include_documents: bool = False) -> Iterator[dict]:
+    """Yield every chunk in a collection as {id, metadata[, text]} (paged)."""
+    coll = get_collection(collection)
+    include = ["metadatas"] + (["documents"] if include_documents else [])
+    offset = 0
+    while True:
+        results = coll.get(limit=500, offset=offset, include=include)
+        if not results["ids"]:
+            return
+        for i, id_ in enumerate(results["ids"]):
+            rec = {"id": id_, "metadata": results["metadatas"][i] or {}}
+            if include_documents:
+                rec["text"] = results["documents"][i]
+            yield rec
+        offset += 500
+
+
 def query(query_embedding: list[float], top_k: int = 20) -> list[dict]:
     ensure_collection_compatible()
     coll = get_collection()
@@ -137,39 +167,19 @@ def query(query_embedding: list[float], top_k: int = 20) -> list[dict]:
         })
     return hits
 
+
 def keyword_search(pattern: str, limit: int = 200) -> list[dict]:
-    coll = get_collection()
-    total = coll.count()
-    hits = []
-    seen = set()
     # Literal substring match: a user-supplied "pattern" must never become a
     # regex (catastrophic backtracking on a large corpus is a ReDoS).
     compiled = re.compile(re.escape(pattern), re.IGNORECASE)
-    offset = 0
-    batch = 500
-    while offset < total and len(hits) < limit:
-        results = coll.get(limit=batch, offset=offset, include=["documents", "metadatas"])
-        if not results["ids"]:
-            break
-        for i, doc in enumerate(results["documents"]):
-            if compiled.search(doc) and results["ids"][i] not in seen:
-                seen.add(results["ids"][i])
-                hits.append({
-                    "text": doc,
-                    "metadata": results["metadatas"][i],
-                    "distance": 0,
-                    "id": results["ids"][i],
-                })
-                if len(hits) >= limit:
-                    break
-        offset += batch
+    hits = []
+    for rec in iter_records(include_documents=True):
+        if compiled.search(rec["text"]):
+            hits.append({**rec, "distance": 0})
+            if len(hits) >= limit:
+                break
     return hits
 
-def delete_by_sha(file_sha: str):
-    """Remove all chunks previously ingested from the file with this sha."""
-    coll = get_collection()
-    coll.delete(where={"file_sha": file_sha})
-    _invalidate_lexical()
 
 def delete_stale_chunks(file_sha: str, keep_ids: set[str]):
     """Remove chunks of this file NOT in keep_ids. Called AFTER upsert so a
@@ -181,75 +191,10 @@ def delete_stale_chunks(file_sha: str, keep_ids: set[str]):
         coll.delete(ids=stale)
         _invalidate_lexical()
 
-def delete_document(identifier: str) -> int:
-    """Delete by file_sha/doc_id, exact source, or source basename. Returns removed chunk count."""
-    coll = get_collection()
-    before = coll.count()
-    docs = list_documents()
-    matches = [
-        d for d in docs
-        if identifier in {d.get("file_sha"), d.get("doc_id"), d.get("source"), d.get("basename")}
-    ]
-    if not matches:
-        return 0
-    for d in matches:
-        doc_id = d.get("doc_id") or d.get("file_sha")
-        if d.get("doc_id"):
-            coll.delete(where={"doc_id": doc_id})
-        if d.get("file_sha"):
-            coll.delete(where={"file_sha": d["file_sha"]})
-        if not d.get("doc_id") and not d.get("file_sha"):
-            coll.delete(where={"source": d["source"]})
-        try:
-            from . import manifest
-            manifest.delete_document(d.get("doc_id") or d.get("file_sha") or d.get("source"))
-        except Exception:
-            pass
-    _invalidate_lexical()
-    return before - coll.count()
-
-def count() -> int:
-    return get_collection().count()
-
-def distinct_sources() -> int:
-    coll = get_collection()
-    total = coll.count()
-    sources = set()
-    offset = 0
-    while offset < total:
-        results = coll.get(limit=500, offset=offset, include=["metadatas"])
-        if not results["ids"]:
-            break
-        for m in results["metadatas"]:
-            src = (m or {}).get("source")
-            if src:
-                sources.add(src)
-        offset += 500
-    return len(sources)
-
-def _all_records(include_documents: bool = False) -> list[dict]:
-    coll = get_collection()
-    total = coll.count()
-    records = []
-    offset = 0
-    include = ["metadatas"]
-    if include_documents:
-        include.append("documents")
-    while offset < total:
-        results = coll.get(limit=500, offset=offset, include=include)
-        if not results["ids"]:
-            break
-        for i, id_ in enumerate(results["ids"]):
-            rec = {"id": id_, "metadata": (results["metadatas"][i] or {})}
-            if include_documents:
-                rec["text"] = results["documents"][i]
-            records.append(rec)
-        offset += 500
-    return records
 
 def list_documents() -> list[dict]:
     docs: dict[str, dict] = {}
-    for rec in _all_records():
+    for rec in iter_records():
         meta = rec["metadata"]
         source = meta.get("source") or "unknown"
         key = meta.get("doc_id") or meta.get("file_sha") or source
@@ -266,6 +211,64 @@ def list_documents() -> list[dict]:
         row["chunks"] += 1
     return sorted(docs.values(), key=lambda d: (d["source"], d["doc_id"]))
 
+
+def find_document(identifier: str) -> dict | None:
+    """Locate a document by doc_id, file_sha, source, or source basename.
+
+    Returns {"manifest": dict|None, "indexed": dict|None}; None when neither
+    the manifest nor the index knows the identifier."""
+    from . import manifest
+    m = manifest.get_document(identifier)
+    indexed = next((
+        d for d in list_documents()
+        if identifier in {d.get("doc_id"), d.get("file_sha"), d.get("source"), d.get("basename")}
+    ), None)
+    if m is None and indexed is None:
+        return None
+    return {"manifest": m, "indexed": indexed}
+
+
+def document_source(identifier: str) -> str | None:
+    """Stored source path for a document matched by any identifier, or None."""
+    found = find_document(identifier)
+    if found is None:
+        return None
+    return (found["manifest"] or found["indexed"] or {}).get("source")
+
+
+def delete_document(identifier: str) -> int:
+    """Delete by file_sha/doc_id, exact source, or source basename. Returns removed chunk count."""
+    coll = get_collection()
+    before = coll.count()
+    matches = [
+        d for d in list_documents()
+        if identifier in {d.get("file_sha"), d.get("doc_id"), d.get("source"), d.get("basename")}
+    ]
+    if not matches:
+        return 0
+    for d in matches:
+        for key in ("doc_id", "file_sha"):
+            if d.get(key):
+                coll.delete(where={key: d[key]})
+        if not d.get("doc_id") and not d.get("file_sha"):
+            coll.delete(where={"source": d["source"]})
+    try:
+        from . import manifest
+        manifest.delete_document(identifier)
+    except Exception:
+        pass
+    _invalidate_lexical()
+    return before - coll.count()
+
+
+def count() -> int:
+    return get_collection().count()
+
+
+def distinct_sources() -> int:
+    return len({r["metadata"].get("source") for r in iter_records() if r["metadata"].get("source")})
+
+
 def list_collections() -> list[dict]:
     out = []
     for item in _client().list_collections():
@@ -273,6 +276,7 @@ def list_collections() -> list[dict]:
         coll = get_collection(name)
         out.append({"name": name, "count": coll.count(), "metadata": dict(coll.metadata or {})})
     return sorted(out, key=lambda c: c["name"])
+
 
 def delete_collection(name: str) -> bool:
     if name not in {c["name"] for c in list_collections()}:
@@ -283,9 +287,9 @@ def delete_collection(name: str) -> bool:
     lexical.invalidate(name)
     return True
 
+
 def get_by_parent_id(parent_id: str) -> list[dict]:
-    coll = get_collection()
-    results = coll.get(where={"parent_id": parent_id}, include=["documents", "metadatas"])
+    results = get_collection().get(where={"parent_id": parent_id}, include=["documents", "metadatas"])
     hits = []
     for i, id_ in enumerate(results["ids"]):
         hits.append({

@@ -26,27 +26,16 @@ def invalidate(collection_name: str = None):
         _CACHE.pop(collection_name, None)
 
 def _build_index(name: str) -> dict | None:
-    coll = vector_store.get_collection(name)
-    total = coll.count()
-    if total == 0:
+    records = list(vector_store.iter_records(collection=name, include_documents=True))
+    if not records:
         return None
-    ids, docs, metas = [], [], []
-    offset = 0
-    while offset < total:
-        batch = coll.get(limit=500, offset=offset, include=["documents", "metadatas"])
-        if not batch["ids"]:
-            break
-        ids.extend(batch["ids"])
-        docs.extend(batch["documents"])
-        metas.extend(batch["metadatas"])
-        offset += 500
-    corpus = [tokenize(d) for d in docs]
+    corpus = [tokenize(r["text"]) for r in records]
     return {
-        "count": total,
+        "count": len(records),
         "bm25": BM25Okapi(corpus),
-        "ids": ids,
-        "docs": docs,
-        "metas": metas,
+        "ids": [r["id"] for r in records],
+        "docs": [r["text"] for r in records],
+        "metas": [r["metadata"] for r in records],
     }
 
 def _get_index(name: str = None) -> dict | None:

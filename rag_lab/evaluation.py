@@ -6,9 +6,9 @@ import time
 
 import yaml
 
+from .citations import is_refusal
 from .config import eval_dir
-
-REFUSAL_MARKER = "don't know from the provided documents"
+from .retriever import coerce_score
 
 MAX_EVAL_QUESTIONS = 100
 
@@ -26,6 +26,18 @@ def secure_questions_path(path: str) -> str:
         raise ValueError(f"questions file must live under {root}: {path}")
     return str(resolved)
 
+
+def _yaml_sections(path: str, key: str) -> list[tuple[int, object]]:
+    """Load a YAML file and return its numbered `<key>:` list entries."""
+    p = Path(path)
+    if not p.exists():
+        raise ValueError(f"File not found: {path}")
+    data = yaml.safe_load(p.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not isinstance(data.get(key), list):
+        raise ValueError(f"{path}: expected a top-level '{key}:' list")
+    return list(enumerate(data[key], 1))
+
+
 # ---------- Golden question set ----------
 
 @dataclass
@@ -38,20 +50,14 @@ class EvalQuestion:
     expect_refusal: bool = False
     tags: list[str] = field(default_factory=list)
 
+
 def load_questions(path: str) -> list[EvalQuestion]:
-    p = Path(path)
-    if not p.exists():
-        raise ValueError(f"Questions file not found: {path}")
-    data = yaml.safe_load(p.read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or not isinstance(data.get("questions"), list):
-        raise ValueError(f"{path}: expected a top-level 'questions:' list")
     questions = []
     seen_ids = set()
-    for i, raw in enumerate(data["questions"], 1):
+    for i, raw in _yaml_sections(path, "questions"):
         if not isinstance(raw, dict):
             raise ValueError(f"{path}: question #{i} is not a mapping")
-        qid = raw.get("id")
-        text = raw.get("question")
+        qid, text = raw.get("id"), raw.get("question")
         if not qid or not text:
             raise ValueError(f"{path}: question #{i} needs both 'id' and 'question'")
         if qid in seen_ids:
@@ -72,6 +78,7 @@ def load_questions(path: str) -> list[EvalQuestion]:
     if not questions:
         raise ValueError(f"{path}: no questions defined")
     return questions
+
 
 # ---------- Variants ----------
 
@@ -101,20 +108,12 @@ class Variant:
             min_score=self.min_score, max_iters=self.max_iters,
         )
 
+
 def load_variants(path: str) -> list[Variant]:
-    p = Path(path)
-    if not p.exists():
-        raise ValueError(f"Variants file not found: {path}")
-    data = yaml.safe_load(p.read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or not isinstance(data.get("variants"), list):
-        raise ValueError(f"{path}: expected a top-level 'variants:' list")
+    known = set(Variant.__dataclass_fields__)
     variants = []
     seen = set()
-    known = {
-        "name", "mode", "top_k", "rerank_top", "use_reranker", "small_to_big",
-        "parent_top_k", "max_context_chars", "min_score", "max_iters", "collection",
-    }
-    for i, raw in enumerate(data["variants"], 1):
+    for i, raw in _yaml_sections(path, "variants"):
         if not isinstance(raw, dict) or not raw.get("name"):
             raise ValueError(f"{path}: variant #{i} needs a 'name'")
         unknown = set(raw) - known
@@ -128,11 +127,13 @@ def load_variants(path: str) -> list[Variant]:
         raise ValueError(f"{path}: no variants defined")
     return variants
 
+
 # ---------- Metrics ----------
 
 def _hit_matches(hit: dict, expected_basenames: set[str]) -> bool:
     source = (hit.get("metadata") or {}).get("source", "")
     return Path(source).name in expected_basenames
+
 
 def retrieval_metrics(hits: list[dict], expected_sources: list[str], k: int,
                       chunk_fragments: list[str] = None) -> dict:
@@ -153,16 +154,13 @@ def retrieval_metrics(hits: list[dict], expected_sources: list[str], k: int,
     if chunk_fragments:
         frags = [f.lower() for f in chunk_fragments]
         def chunk_match(h):
-            text = (h.get("text") or "").lower()
-            return any(f in text for f in frags)
+            return any(f in (h.get("text") or "").lower() for f in frags)
         c_first = next((i + 1 for i, h in enumerate(hits) if chunk_match(h)), None)
         out["chunk_hit_at_k"] = any(chunk_match(h) for h in hits[:k])
         out["chunk_mrr"] = (1.0 / c_first) if c_first else 0.0
         out["chunk_first_rank"] = c_first
     return out
 
-def is_refusal(answer: str) -> bool:
-    return REFUSAL_MARKER in (answer or "").lower()
 
 def fragment_match(answer: str, fragments: list[str]) -> bool | None:
     """Any-match, case-insensitive. None when the question defines no fragments."""
@@ -171,8 +169,10 @@ def fragment_match(answer: str, fragments: list[str]) -> bool | None:
     low = (answer or "").lower()
     return any(f.lower() in low for f in fragments)
 
+
 def _prefix_metrics(metrics: dict, prefix: str) -> dict:
     return {f"{prefix}_{k}": v for k, v in metrics.items()}
+
 
 # ---------- Eval loop ----------
 
@@ -236,18 +236,34 @@ def evaluate(
         "config": {**asdict(cfg), "retrieval_only": retrieval_only},
     }
 
+
+def run_eval(
+    questions_file: str,
+    cfg,
+    retrieval_only: bool = True,
+    variant: str = "default",
+    secure: bool = True,
+    extra_config: dict | None = None,
+) -> dict:
+    """Load (allowlisted when secure) questions, evaluate, stamp collection, log the run.
+
+    Shared by the CLI, web API, and MCP server. Returns the full report with
+    'eval_id' and 'config' (collection + any extra_config merged in)."""
+    from . import runs, vector_store
+    path = secure_questions_path(questions_file) if secure else questions_file
+    questions = load_questions(path)
+    if len(questions) > MAX_EVAL_QUESTIONS:
+        raise ValueError(f"too many questions ({len(questions)} > {MAX_EVAL_QUESTIONS})")
+    report = evaluate(questions, cfg, retrieval_only=retrieval_only)
+    report["config"] = {**report["config"], **(extra_config or {}), "collection": vector_store.default_collection_name()}
+    report["eval_id"] = runs.log_eval(variant, report["config"], report["summary"], report["per_question"])
+    return report
+
+
 def _mean(values: list) -> float | None:
     values = [v for v in values if v is not None]
     return (sum(values) / len(values)) if values else None
 
-def _as_number(v) -> float | None:
-    """Coerce verifier scores that arrive as strings; None if not numeric."""
-    if isinstance(v, bool) or v is None:
-        return None
-    try:
-        return float(v)
-    except (ValueError, TypeError):
-        return None
 
 def summarize(per_question: list[dict], include_tags: bool = True) -> dict:
     # Exclude error-tagged entries from every metric (they are not misses);
@@ -256,57 +272,47 @@ def summarize(per_question: list[dict], include_tags: bool = True) -> dict:
     per_question = [e for e in per_question if "error" not in e]
     answered = [e for e in per_question if not e["expect_refusal"]]
     refusals = [e for e in per_question if e["expect_refusal"]]
-    hits = [e["hit_at_k"] for e in answered if "hit_at_k" in e]
+
+    def rate(rows: list[dict], key: str) -> float | None:
+        return _mean([1.0 if e[key] else 0.0 for e in rows if key in e])
+
+    def mean_of(rows: list[dict], key: str) -> float | None:
+        return _mean([e.get(key) for e in rows if key in e])
+
     summary = {
         "questions": len(per_question),
         "errors": len(errored),
-        "hit_rate": _mean([1.0 if h else 0.0 for h in hits]),
-        "hit_at_1": _mean([1.0 if e["hit_at_1"] else 0.0 for e in answered if "hit_at_1" in e]),
-        "hit_at_3": _mean([1.0 if e["hit_at_3"] else 0.0 for e in answered if "hit_at_3" in e]),
-        "hit_at_5": _mean([1.0 if e["hit_at_5"] else 0.0 for e in answered if "hit_at_5" in e]),
-        "hit_at_10": _mean([1.0 if e["hit_at_10"] else 0.0 for e in answered if "hit_at_10" in e]),
-        "mrr": _mean([e.get("mrr") for e in answered if "mrr" in e]),
-        "chunk_hit_rate": _mean([
-            1.0 if e["chunk_hit_at_k"] else 0.0 for e in answered if "chunk_hit_at_k" in e
-        ]),
-        "chunk_mrr": _mean([e.get("chunk_mrr") for e in answered if "chunk_mrr" in e]),
-        "context_hit_rate": _mean([
-            1.0 if e["context_hit_at_k"] else 0.0 for e in answered if "context_hit_at_k" in e
-        ]),
-        "context_mrr": _mean([e.get("context_mrr") for e in answered if "context_mrr" in e]),
-        "context_chunk_hit_rate": _mean([
-            1.0 if e["context_chunk_hit_at_k"] else 0.0 for e in answered if "context_chunk_hit_at_k" in e
-        ]),
-        "context_chunk_mrr": _mean([
-            e.get("context_chunk_mrr") for e in answered if "context_chunk_mrr" in e
-        ]),
-        "fragment_rate": _mean([
-            1.0 if e["fragment_matched"] else 0.0
-            for e in answered if e.get("fragment_matched") is not None
-        ]),
-        "verifier_mean": _mean([_as_number(e.get("verifier_score")) for e in answered]),
-        "refusal_accuracy": _mean([
-            1.0 if e.get("refusal_correct") else 0.0 for e in refusals if "refusal_correct" in e
-        ]),
-        "citation_validity_rate": _mean([
-            1.0 if e.get("citation_valid") else 0.0
-            for e in per_question if e.get("citation_valid") is not None
-        ]),
-        "citation_count_mean": _mean([
-            e.get("citation_count") for e in per_question if e.get("citation_count") is not None
-        ]),
-        "retrieval_latency_ms_mean": _mean([
-            e.get("retrieval_latency_ms") for e in per_question if e.get("retrieval_latency_ms") is not None
-        ]),
-        "latency_ms_mean": _mean([e.get("latency_ms") for e in per_question if e.get("latency_ms") is not None]),
-        "context_chars_mean": _mean([e.get("context_chars") for e in answered if e.get("context_chars") is not None]),
+        "hit_rate": rate(answered, "hit_at_k"),
+        "hit_at_1": rate(answered, "hit_at_1"),
+        "hit_at_3": rate(answered, "hit_at_3"),
+        "hit_at_5": rate(answered, "hit_at_5"),
+        "hit_at_10": rate(answered, "hit_at_10"),
+        "mrr": mean_of(answered, "mrr"),
+        "chunk_hit_rate": rate(answered, "chunk_hit_at_k"),
+        "chunk_mrr": mean_of(answered, "chunk_mrr"),
+        "context_hit_rate": rate(answered, "context_hit_at_k"),
+        "context_mrr": mean_of(answered, "context_mrr"),
+        "context_chunk_hit_rate": rate(answered, "context_chunk_hit_at_k"),
+        "context_chunk_mrr": mean_of(answered, "context_chunk_mrr"),
+        "fragment_rate": rate(
+            [e for e in answered if e.get("fragment_matched") is not None], "fragment_matched"
+        ),
+        "verifier_mean": _mean([coerce_score(e.get("verifier_score")) for e in answered]),
+        "refusal_accuracy": rate(refusals, "refusal_correct"),
+        "citation_validity_rate": rate(
+            [e for e in per_question if e.get("citation_valid") is not None], "citation_valid"
+        ),
+        "citation_count_mean": mean_of(per_question, "citation_count"),
+        "retrieval_latency_ms_mean": mean_of(per_question, "retrieval_latency_ms"),
+        "latency_ms_mean": mean_of(per_question, "latency_ms"),
+        "context_chars_mean": mean_of(answered, "context_chars"),
         "prompt_tokens": sum((e.get("usage") or {}).get("prompt_tokens", 0) for e in per_question),
         "completion_tokens": sum((e.get("usage") or {}).get("completion_tokens", 0) for e in per_question),
     }
     if include_tags:
-        tag_summary = {}
+        by_tag: dict[str, list] = {}
         for e in answered:
             for tag in e.get("tags", []):
-                tag_summary.setdefault(tag, []).append(e)
-        summary["by_tag"] = {tag: summarize(rows, include_tags=False) for tag, rows in tag_summary.items()}
+                by_tag.setdefault(tag, []).append(e)
+        summary["by_tag"] = {tag: summarize(rows, include_tags=False) for tag, rows in by_tag.items()}
     return summary

@@ -1,12 +1,9 @@
 from pypdf import PdfReader
 
-from .base import LOW_YIELD_PAGE_CHARS, ParseResult
+from .base import LOW_YIELD_PAGE_CHARS, OCR_INSTALL_CMD, ParseResult
 from . import ocr as ocr_module
 
-OCR_INSTALL_HINT = (
-    "OCR requested but not available — install with: "
-    "brew install tesseract tesseract-lang && uv sync --group ocr"
-)
+OCR_INSTALL_HINT = f"OCR requested but not available — install with: {OCR_INSTALL_CMD}"
 
 
 def parse_pdf(path: str, ocr: str = "auto") -> ParseResult:

@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 EMPTY_SECTION_CHARS = 5
 # Below this average per page a PDF is almost certainly scanned.
 LOW_YIELD_PAGE_CHARS = 50
+# Shared install hint for OCR (tesseract + the [ocr] dependency group).
+OCR_INSTALL_CMD = "brew install tesseract tesseract-lang && uv sync --group ocr"
 
 
 @dataclass
@@ -28,9 +30,7 @@ class ParseResult:
         avg = total / len(sections)
         warnings = []
         if total == 0:
-            warnings.append(
-                "no text extracted — enable OCR with: brew install tesseract tesseract-lang && uv sync --group ocr"
-            )
+            warnings.append(f"no text extracted — enable OCR with: {OCR_INSTALL_CMD}")
         elif self.section_unit == "page":
             if avg < LOW_YIELD_PAGE_CHARS:
                 warnings.append(
