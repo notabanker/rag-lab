@@ -315,7 +315,7 @@ Every `rag query` and web query is logged to `<db-path>/runs.sqlite3`: question,
 uv run rag serve [--host 127.0.0.1] [--port 8000]
 ```
 
-`rag serve` starts the FastAPI backend on `http://127.0.0.1:8000`. It still serves a small built-in test console at `/`, but the main V3.1 UI is the React dashboard:
+`rag serve` starts the FastAPI backend on `http://127.0.0.1:8000`; the UI is the React dashboard:
 
 ```bash
 cd dashboard
@@ -702,9 +702,7 @@ rag-lab/
 │   ├── verifier.py         # Grounding auditor (separate LLM call)
 │   ├── evaluation.py       # Eval harness: golden questions, metrics, variants
 │   ├── runs.py             # SQLite persistence for runs and eval results
-│   ├── web.py              # FastAPI web test console
-│   ├── static/
-│   │   └── index.html      # Test-console SPA (served by web.py)
+│   ├── web.py              # FastAPI API server for the dashboard
 │   └── parsers/
 │       ├── __init__.py     # Parser registry, pick_parser()
 │       ├── pdf.py          # pypdf text extraction (+ optional OCR)

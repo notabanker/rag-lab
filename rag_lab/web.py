@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -18,8 +18,6 @@ from .parsers import PARSERS, as_result, pick_parser
 from .retriever import RetrievalConfig, compact_chunk, retrieve
 
 log = logging.getLogger("rag_lab.web")
-
-_STATIC_INDEX = Path(__file__).parent / "static" / "index.html"
 
 # Host-header allowlist for no-token (loopback) mode. Browsers can be aimed
 # at a loopback port via DNS rebinding (attacker.com -> 127.0.0.1); without
@@ -61,11 +59,6 @@ def require_api_token(authorization: str | None = Header(default=None)):
 
 
 API_DEPENDENCIES = [Depends(require_api_token)]
-
-
-@app.get("/", response_class=HTMLResponse)
-async def index():
-    return _STATIC_INDEX.read_text(encoding="utf-8")
 
 
 @app.get("/health")
