@@ -11,3 +11,7 @@ dist/
 node_modules/
 .DS_Store
 .ruff_cache/
+.env
+.env.*
+!.env.example
+.worktrees/
